@@ -8,6 +8,7 @@
 ## SavedVariables: LittleBuffBoyDB
 ## SavedVariablesPerCharacter: LittleBuffBoyCharDB
 ## X-Category: Buffs & Debuffs
+## X-Curse-Project-ID: 1817737
 
 Core/Compat.lua
 Core/Catalog.lua
