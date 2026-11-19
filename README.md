@@ -11,7 +11,8 @@ A lightweight, standalone, all-class buff, Shaman totem, consumable, and minimap
 - **Midnight Engine & Combat Safe:** Strictly uses modern `C_` APIs (zero `COMBAT_LOG_EVENT_UNFILTERED`), guards aura reads with `issecretvalue()`, and queues `SecureActionButtonTemplate` attribute mutations during `InCombatLockdown()` for immediate flush on `PLAYER_REGEN_ENABLED`.
 - **Clean, Compact UX:**
   - **Buff Strip:** Movable, lockable dark-slate strip with one-click smart-cast `SecureActionButtonTemplate` buttons (Left-click: next target without dropping your current target; Right-click: group/greater spell).
-  - **Assignment Matrix (`/lbb`):** Tabbed grid for Group Buffs, Paladin Blessings, Shaman Totems, and Consumables with Left-click cycle, Right-click clear, Shift+Click lock, and Mousewheel scroll.
+  - **Assignment Matrix (`/lbb`):** Tabbed grid for Group Buffs, Paladin Blessings & Aura column (with inline Per-Player Overrides submenu), Paladin Righteous Fury & Seal controls, Shaman Totems, and Consumables — Left-click opens a selection dropdown, Mousewheel cycles, Right-click clears, and Shift+Click locks.
+  - **Paladin Tank/Self Support:** Opt-in Righteous Fury & Seal tracking (auto-prompts Tank Paladins, supports Forever's *Seal of Fury* + dynamic spellbook Seals, uses Blizzard's `CustomAuraContainerTemplate` native overlay in combat with safe fallback, and yields cleanly if standalone PallyPower is loaded).
   - **Raid Frame Micro-Indicators:** Minimal 6x6px corner pips on Blizzard `CompactUnitFrame` frames with calm combat behavior.
   - **Smart Reminders:** One-click **"Restore Tracking"** pill for profession & Hunter tracking, plus a Ready Check / Manual Nudge bar with **Smart Whisper** (concise individual whispers, never `/raid` spam).
 
@@ -23,6 +24,8 @@ A lightweight, standalone, all-class buff, Shaman totem, consumable, and minimap
 - `/lbb reset` — Clear manual locks and re-negotiate
 - `/lbb nudge` — Toggle Ready Check & Smart Whisper Nudge bar
 - `/lbb sync` — Broadcast capabilities and request sync from peers
+- `/lbb rf` — Toggle Paladin Righteous Fury tracking
+- `/lbb seal` — Cycle Paladin Seal tracking (or disable)
 - `/lbb status` — Print diagnostic summary
 - `/lbb options` — Open Options window
 

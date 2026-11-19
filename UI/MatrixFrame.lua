@@ -10,6 +10,7 @@ local ipairs = ipairs
 local tostring = tostring
 local table_insert = table.insert
 local table_sort = table.sort
+local table_concat = table.concat
 
 MatrixFrame.frame = nil
 MatrixFrame.activeTab = "BUFFS" -- "BUFFS", "TOTEMS", "CONSUMABLES"
@@ -19,8 +20,8 @@ MatrixFrame.btnUsed = 0
 MatrixFrame.fsPool = {}
 MatrixFrame.fsUsed = 0
 
-local FRAME_W = 680
-local FRAME_H = 440
+local FRAME_W = 736
+local FRAME_H = 472
 
 local function collectCastersForFamily(familyID)
 	local fam = LBB.Catalog.GetFamily(familyID)
@@ -36,6 +37,19 @@ local function collectCastersForFamily(familyID)
 		end
 	end
 	table_sort(list)
+	return list
+end
+
+local function collectMembersByClass(classToken)
+	local list = {}
+	for _, m in ipairs(LBB.Assignments.roster) do
+		if m.class == classToken then
+			table_insert(list, m)
+		end
+	end
+	table_sort(list, function(a, b)
+		return (a.name or "") < (b.name or "")
+	end)
 	return list
 end
 
@@ -74,7 +88,7 @@ function MatrixFrame:Init()
 	local Theme = LBB.Theme
 	local f = _G.CreateFrame("Frame", "LittleBuffBoyMatrixFrame", _G.UIParent)
 	f:SetSize(FRAME_W, FRAME_H)
-	f:SetPoint("CENTER", _G.UIParent, "CENTER", 0, 40)
+	f:SetPoint("CENTER", _G.UIParent, "CENTER", 0, 30)
 	f:SetMovable(true)
 	f:SetClampedToScreen(true)
 	f:EnableMouse(true)
@@ -84,6 +98,11 @@ function MatrixFrame:Init()
 
 	f:SetScript("OnDragStart", function(self) self:StartMoving() end)
 	f:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+	f:SetScript("OnHide", function()
+		if Theme.HideDropdownMenu then
+			Theme.HideDropdownMenu()
+		end
+	end)
 
 	if _G.UISpecialFrames then
 		table_insert(_G.UISpecialFrames, "LittleBuffBoyMatrixFrame")
@@ -120,6 +139,7 @@ function MatrixFrame:Init()
 		local tabID = t.id
 		local btn = Theme.CreateButton(tabBar, t.label, t.w, 22, function()
 			self.activeTab = tabID
+			Theme.HideDropdownMenu()
 			self:Refresh()
 		end)
 		btn:SetPoint("LEFT", tabBar, "LEFT", xOff, 0)
@@ -137,7 +157,7 @@ function MatrixFrame:Init()
 	-- Hint text
 	local hint = Theme.CreateFontString(content, 10, "LEFT", Theme.Colors.muted)
 	hint:SetPoint("BOTTOMLEFT", content, "BOTTOMLEFT", 8, 6)
-	hint:SetText("Left-Click: Cycle  |  Right-Click: Clear  |  Shift+Click: Toggle Lock  |  Mousewheel: Scroll")
+	hint:SetText("Left-Click: Select from Dropdown  |  Scroll: Cycle  |  Right-Click: Clear  |  Shift+Click: Toggle Lock")
 	f._hint = hint
 
 	-- Footer action bar
@@ -288,6 +308,301 @@ local function makeCell(parent, x, y, w, h, text, locked, bgColor, onClick, onWh
 	return btn
 end
 
+-- =========================================================================
+-- Dropdown Builders (Left-Click selection menus with Per-Player Overrides)
+-- =========================================================================
+
+function MatrixFrame:BuildGroupBuffMenu(famID, sg, casters, applyFn)
+	local fam = LBB.Catalog.GetFamily(famID)
+	local cur = LBB.Assignments:GetGroupBuff(famID, sg)
+	local curCaster = cur and cur.caster or nil
+	local curLocked = cur and cur.locked or false
+
+	local items = {
+		{ isTitle = true, text = string.format("%s - Group %d", fam and fam.shortName or famID, sg) },
+	}
+	if #casters == 0 then
+		table_insert(items, { isTitle = true, text = "No eligible casters in roster", color = LBB.Theme.Colors.muted })
+	else
+		for _, cName in ipairs(casters) do
+			local vec = LBB.Capabilities:GetPeerVector(cName)
+			local b = vec and vec.buffs and vec.buffs[famID]
+			local tag = b and b.talentRank and b.talentRank > 0 and ("T" .. tostring(b.talentRank)) or ""
+			local casterRef = cName
+			table_insert(items, {
+				text = LBB.Theme.ColorizeName(cName, fam.class),
+				rightText = tag,
+				checked = (curCaster == cName),
+				onClick = function()
+					applyFn(casterRef, true)
+				end,
+			})
+		end
+	end
+	table_insert(items, { isSeparator = true })
+	table_insert(items, {
+		text = "Clear (Unassigned)",
+		color = LBB.Theme.Colors.danger,
+		checked = (curCaster == nil),
+		onClick = function()
+			applyFn(nil, true)
+		end,
+	})
+	table_insert(items, {
+		text = curLocked and "Unlock Cell" or "Lock Cell",
+		color = LBB.Theme.Colors.locked,
+		onClick = function()
+			applyFn(curCaster, not curLocked)
+		end,
+	})
+	return items
+end
+
+function MatrixFrame:BuildPaladinClassMenu(pallyName, classToken, applyClassFn)
+	local Catalog = LBB.Catalog
+	local Theme = LBB.Theme
+	local Assignments = LBB.Assignments
+	local cur = Assignments:GetClassBuff(pallyName, classToken)
+	local curFam = cur and cur.familyID or nil
+	local curLocked = cur and cur.locked or false
+	local pVec = LBB.Capabilities:GetPeerVector(pallyName)
+	local blessingList = { "BOW", "BOM", "BOK", "BOSALV", "BOL", "BOSANC" }
+
+	local clsInfo = Catalog.CLASS_INFO[classToken]
+	local items = {
+		{ isTitle = true, text = shortDisplayName(pallyName) .. " -> " .. (clsInfo and clsInfo.name or classToken) },
+	}
+
+	for _, famID in ipairs(blessingList) do
+		local fam = Catalog.GetFamily(famID)
+		local known = pVec and pVec.buffs and pVec.buffs[famID] and pVec.buffs[famID].known
+		local tal = known and pVec.buffs[famID].talentRank or 0
+		local tag = tal > 0 and ("T" .. tostring(tal)) or (pVec and not known and "n/a" or "")
+		local fRef = famID
+		table_insert(items, {
+			text = fam and fam.name or famID,
+			rightText = tag,
+			color = (pVec and not known) and Theme.Colors.muted or Theme.Colors.text,
+			checked = (curFam == famID),
+			onClick = function()
+				applyClassFn(fRef, true)
+			end,
+		})
+	end
+
+	table_insert(items, { isSeparator = true })
+	table_insert(items, {
+		text = "Clear Class Blessing",
+		color = Theme.Colors.danger,
+		checked = (curFam == nil),
+		onClick = function()
+			applyClassFn(nil, true)
+		end,
+	})
+	table_insert(items, {
+		text = curLocked and "Unlock Cell" or "Lock Cell",
+		color = Theme.Colors.locked,
+		onClick = function()
+			applyClassFn(curFam, not curLocked)
+		end,
+	})
+
+	-- Inline Per-Player Overrides submenu section
+	local classMembers = collectMembersByClass(classToken)
+	if #classMembers > 0 then
+		table_insert(items, { isSeparator = true })
+		table_insert(items, { isTitle = true, text = "Per-Player Overrides" })
+
+		local anyOverride = false
+		for _, member in ipairs(classMembers) do
+			local targetName = member.name
+			local ov = Assignments:GetPaladinNormalOverride(pallyName, targetName)
+			local ovFam = ov and ov.familyID and Catalog.GetFamily(ov.familyID) or nil
+			if ovFam then
+				anyOverride = true
+			end
+
+			local sub = {
+				{ isTitle = true, text = targetName .. " Override" },
+				{
+					text = "Use Class Default",
+					color = Theme.Colors.muted,
+					checked = (ovFam == nil),
+					onClick = function()
+						Assignments:SetPaladinNormalOverride(pallyName, targetName, classToken, nil, false)
+						LBB.Comms:BroadcastLock("NORMAL", targetName, nil, pallyName, false, classToken)
+						LBB:RefreshUI()
+					end,
+				},
+				{ isSeparator = true },
+			}
+			for _, famID in ipairs(blessingList) do
+				local fam = Catalog.GetFamily(famID)
+				local fRef = famID
+				table_insert(sub, {
+					text = fam and fam.name or famID,
+					checked = (ov and ov.familyID == famID),
+					onClick = function()
+						Assignments:SetPaladinNormalOverride(pallyName, targetName, classToken, fRef, true)
+						LBB.Comms:BroadcastLock("NORMAL", targetName, fRef, pallyName, true, classToken)
+						LBB:RefreshUI()
+					end,
+				})
+			end
+
+			table_insert(items, {
+				text = Theme.ColorizeName(targetName, classToken),
+				rightText = ovFam and (ovFam.shortName .. " >") or "Default >",
+				rightColor = ovFam and Theme.Colors.accent or Theme.Colors.muted,
+				submenu = sub,
+			})
+		end
+
+		if anyOverride then
+			table_insert(items, {
+				text = "Clear All " .. (clsInfo and clsInfo.name or classToken) .. " Overrides",
+				color = Theme.Colors.warn,
+				onClick = function()
+					local activeOvs = Assignments:GetPaladinNormalOverridesForClass(pallyName, classToken)
+					for _, entry in ipairs(activeOvs) do
+						Assignments:SetPaladinNormalOverride(pallyName, entry.target, classToken, nil, false)
+						LBB.Comms:BroadcastLock("NORMAL", entry.target, nil, pallyName, false, classToken)
+					end
+					LBB:RefreshUI()
+				end,
+			})
+		end
+	end
+
+	return items
+end
+
+function MatrixFrame:BuildPaladinAuraMenu(pallyName, applyAuraFn)
+	local Catalog = LBB.Catalog
+	local Theme = LBB.Theme
+	local cur = LBB.Assignments:GetPaladinAura(pallyName)
+	local curAuraID = cur and cur.auraID or 0
+	local curLocked = cur and cur.locked or false
+	local pVec = LBB.Capabilities:GetPeerVector(pallyName)
+
+	local items = {
+		{ isTitle = true, text = shortDisplayName(pallyName) .. " - Aura" },
+	}
+	for auraID, def in ipairs(Catalog.PALADIN_AURAS) do
+		local known = pVec and pVec.auras and pVec.auras[auraID] ~= nil
+		local aidRef = auraID
+		table_insert(items, {
+			text = def.name,
+			rightText = (pVec and not known) and "n/a" or "",
+			color = (pVec and not known) and Theme.Colors.muted or Theme.Colors.text,
+			checked = (curAuraID == auraID),
+			onClick = function()
+				applyAuraFn(aidRef, true)
+			end,
+		})
+	end
+	table_insert(items, { isSeparator = true })
+	table_insert(items, {
+		text = "Clear Aura",
+		color = Theme.Colors.danger,
+		checked = (curAuraID == 0),
+		onClick = function()
+			applyAuraFn(0, true)
+		end,
+	})
+	table_insert(items, {
+		text = curLocked and "Unlock Aura" or "Lock Aura",
+		color = Theme.Colors.locked,
+		onClick = function()
+			applyAuraFn(curAuraID, not curLocked)
+		end,
+	})
+	return items
+end
+
+function MatrixFrame:BuildPaladinSealMenu()
+	local vec = LBB.Capabilities:GetPlayerVector()
+	local selfCfg = LBB.Assignments:GetPaladinSelfConfig()
+	local Theme = LBB.Theme
+
+	local items = {
+		{ isTitle = true, text = "Select Active Seal (Self)" },
+		{
+			text = "Off (Do Not Track Seal)",
+			color = Theme.Colors.danger,
+			checked = (not selfCfg.trackSeal),
+			onClick = function()
+				LBB.Assignments:SetSelectedSeal(nil)
+				LBB:RefreshUI()
+			end,
+		},
+		{ isSeparator = true },
+	}
+
+	local seals = (vec and vec.sealsList) or {}
+	if #seals == 0 then
+		table_insert(items, { isTitle = true, text = "No Seals learned yet", color = Theme.Colors.muted })
+	else
+		for _, sealEntry in ipairs(seals) do
+			local sRef = sealEntry
+			table_insert(items, {
+				text = sealEntry.name,
+				rightText = sealEntry.shortName or "",
+				checked = (selfCfg.trackSeal and selfCfg.sealID == sealEntry.id),
+				onClick = function()
+					LBB.Assignments:SetSelectedSeal(sRef)
+					LBB:RefreshUI()
+				end,
+			})
+		end
+	end
+	return items
+end
+
+function MatrixFrame:BuildTotemMenu(shamanName, subgroup, element, applyTotemFn)
+	local Catalog = LBB.Catalog
+	local Theme = LBB.Theme
+	local cur = LBB.Assignments:GetShamanTotems(subgroup, shamanName) or { locked = {} }
+	local curTotem = cur[element]
+	local curLocked = cur.locked and cur.locked[element] or false
+
+	local items = {
+		{ isTitle = true, text = string.format("%s - %s Totem", shortDisplayName(shamanName), element) },
+	}
+	for _, tDef in ipairs(Catalog.SHAMAN_TOTEMS[element] or {}) do
+		local tRef = tDef.id
+		table_insert(items, {
+			text = tDef.name,
+			rightText = tDef.shortName,
+			checked = (curTotem == tDef.id),
+			onClick = function()
+				applyTotemFn(tRef, true)
+			end,
+		})
+	end
+	table_insert(items, { isSeparator = true })
+	table_insert(items, {
+		text = "Clear Totem",
+		color = Theme.Colors.danger,
+		checked = (curTotem == nil),
+		onClick = function()
+			applyTotemFn(nil, true)
+		end,
+	})
+	table_insert(items, {
+		text = curLocked and "Unlock Slot" or "Lock Slot",
+		color = Theme.Colors.locked,
+		onClick = function()
+			applyTotemFn(curTotem, not curLocked)
+		end,
+	})
+	return items
+end
+
+-- =========================================================================
+-- Tab Renderers
+-- =========================================================================
+
 function MatrixFrame:RenderBuffsTab(content)
 	local Theme = LBB.Theme
 	local Assignments = LBB.Assignments
@@ -300,8 +615,8 @@ function MatrixFrame:RenderBuffsTab(content)
 	secLabel:SetText("Group Buffs (Subgroups G1 - G8)")
 	y = y + 18
 
-	local labelW = 92
-	local colW = 66
+	local labelW = 86
+	local colW = 73
 	local rowH = 22
 
 	-- Column Headers G1..G8
@@ -346,7 +661,7 @@ function MatrixFrame:RenderBuffsTab(content)
 				cellText,
 				locked,
 				nil,
-				function(_, mouseBtn)
+				function(btnSelf, mouseBtn)
 					local cur = Assignments:GetGroupBuff(famRef, sgRef)
 					local curCaster = cur and cur.caster or nil
 					local curLocked = cur and cur.locked or false
@@ -355,8 +670,7 @@ function MatrixFrame:RenderBuffsTab(content)
 					elseif mouseBtn == "RightButton" then
 						applyChange(nil, true)
 					else
-						local nextCaster = cycleList(casters, curCaster, 1)
-						applyChange(nextCaster, true)
+						Theme.ShowDropdownMenu(btnSelf, MatrixFrame:BuildGroupBuffMenu(famRef, sgRef, casters, applyChange))
 					end
 				end,
 				function(_, delta)
@@ -364,21 +678,21 @@ function MatrixFrame:RenderBuffsTab(content)
 					local nextCaster = cycleList(casters, cur and cur.caster or nil, delta > 0 and -1 or 1)
 					applyChange(nextCaster, true)
 				end,
-				fam.name .. " - Group " .. sg .. (caster and ("\nAssigned: " .. caster) or "\nUnassigned")
+				fam.name .. " - Group " .. sg .. (caster and ("\nAssigned: " .. caster) or "\nUnassigned") .. "\nLeft-Click: Dropdown | Scroll: Cycle"
 			)
 			table_insert(self.cells, cell)
 		end
 		y = y + rowH + 3
 	end
 
-	-- Section B: Paladin Blessings (Rows = Paladins, Columns = 9 Classes)
+	-- Section B: Paladin Blessings & Aura Column (Rows = Paladins, Columns = 9 Classes + Aura)
 	y = y + 8
 	local ppYield = LBB.Comms:IsPallyPowerLoaded()
 	local palHdr = self:AcquireLabel(content, 11, "LEFT", ppYield and Theme.Colors.warn or Theme.Colors.accent)
 	palHdr:SetPoint("TOPLEFT", content, "TOPLEFT", 10, -y)
 	palHdr:SetText(ppYield
-		and "Paladin Blessings  |cfffbbf24(Yielded to PallyPower - Read Only)|r"
-		or "Paladin Blessings (Synced with PLPWR)")
+		and "Paladin Blessings & Auras  |cfffbbf24(Yielded to PallyPower - Read Only)|r"
+		or "Paladin Blessings & Auras (Synced with PLPWR  |  Left-Click for Dropdown & Per-Player Overrides)")
 	y = y + 18
 
 	local paladins = {}
@@ -393,71 +707,197 @@ function MatrixFrame:RenderBuffsTab(content)
 		local noneLbl = self:AcquireLabel(content, 10, "LEFT", Theme.Colors.muted)
 		noneLbl:SetPoint("TOPLEFT", content, "TOPLEFT", 12, -y)
 		noneLbl:SetText("No Paladins in current group/raid.")
-		return
-	end
-
-	local clsW = 58
-	for idx, cls in ipairs(Catalog.CLASS_ORDER) do
-		local cInfo = Catalog.CLASS_INFO[cls]
-		local ch = self:AcquireLabel(content, 10, "CENTER", { cInfo.color[1], cInfo.color[2], cInfo.color[3], 1 })
-		ch:SetSize(clsW, 14)
-		ch:SetPoint("TOPLEFT", content, "TOPLEFT", 10 + labelW + (idx - 1) * (clsW + 2), -y)
-		ch:SetText(cInfo.short)
-	end
-	y = y + 16
-
-	local blessingCycle = { "BOW", "BOM", "BOK", "BOSALV", "BOL", "BOSANC" }
-	for _, pName in ipairs(paladins) do
-		local pLbl = self:AcquireLabel(content, 10, "LEFT", { 0.96, 0.55, 0.73, 1 })
-		pLbl:SetSize(labelW, rowH)
-		pLbl:SetPoint("TOPLEFT", content, "TOPLEFT", 10, -y)
-		pLbl:SetText(shortDisplayName(pName))
-
+		y = y + 20
+	else
+		local clsW = 56
+		local auraW = 68
 		for idx, cls in ipairs(Catalog.CLASS_ORDER) do
-			local entry = Assignments:GetClassBuff(pName, cls)
-			local famID = entry and entry.familyID or nil
-			local locked = entry and entry.locked or false
-			local fam = famID and Catalog.GetFamily(famID)
-			local txt = fam and fam.shortName or "|cff64748b--|r"
+			local cInfo = Catalog.CLASS_INFO[cls]
+			local ch = self:AcquireLabel(content, 10, "CENTER", { cInfo.color[1], cInfo.color[2], cInfo.color[3], 1 })
+			ch:SetSize(clsW, 14)
+			ch:SetPoint("TOPLEFT", content, "TOPLEFT", 10 + labelW + (idx - 1) * (clsW + 2), -y)
+			ch:SetText(cInfo.short)
+		end
+		local auraX = 10 + labelW + 9 * (clsW + 2) + 4
+		local ah = self:AcquireLabel(content, 10, "CENTER", Theme.Colors.accent)
+		ah:SetSize(auraW, 14)
+		ah:SetPoint("TOPLEFT", content, "TOPLEFT", auraX, -y)
+		ah:SetText("AURA")
+		y = y + 16
 
-			local pRef, clsRef = pName, cls
-			local function applyPaladin(newFam, newLock)
+		local blessingCycle = { "BOW", "BOM", "BOK", "BOSALV", "BOL", "BOSANC" }
+		local auraCycle = { 1, 2, 3, 4, 5, 6, 7 }
+		for _, pName in ipairs(paladins) do
+			local pLbl = self:AcquireLabel(content, 10, "LEFT", { 0.96, 0.55, 0.73, 1 })
+			pLbl:SetSize(labelW, rowH)
+			pLbl:SetPoint("TOPLEFT", content, "TOPLEFT", 10, -y)
+			pLbl:SetText(shortDisplayName(pName))
+
+			for idx, cls in ipairs(Catalog.CLASS_ORDER) do
+				local entry = Assignments:GetClassBuff(pName, cls)
+				local famID = entry and entry.familyID or nil
+				local locked = entry and entry.locked or false
+				local fam = famID and Catalog.GetFamily(famID)
+				local overrides = Assignments:GetPaladinNormalOverridesForClass(pName, cls)
+				local hasOvs = #overrides > 0
+				local baseTxt = fam and fam.shortName or "|cff64748b--|r"
+				local txt = hasOvs and (baseTxt .. "|cff38bdf8*|r") or baseTxt
+
+				local tipLines = {
+					pName .. " -> " .. Catalog.CLASS_INFO[cls].name .. (fam and (": " .. fam.name) or ": None"),
+				}
+				if hasOvs then
+					table_insert(tipLines, "Per-Player Overrides:")
+					for _, ov in ipairs(overrides) do
+						local ovFam = Catalog.GetFamily(ov.familyID)
+						table_insert(tipLines, "  " .. ov.target .. " -> " .. (ovFam and ovFam.name or ov.familyID))
+					end
+				end
+				if not ppYield then
+					table_insert(tipLines, "Left-Click: Dropdown & Overrides | Scroll: Cycle")
+				end
+
+				local pRef, clsRef = pName, cls
+				local function applyPaladin(newFam, newLock)
+					if ppYield then return end
+					Assignments:SetClassBuff(pRef, clsRef, newFam, newLock)
+					LBB.Comms:BroadcastLock("CLASS", clsRef, newFam, pRef, newLock)
+					LBB:RefreshUI()
+				end
+
+				local cell = makeCell(
+					content,
+					10 + labelW + (idx - 1) * (clsW + 2),
+					y,
+					clsW,
+					rowH,
+					txt,
+					locked,
+					nil,
+					function(btnSelf, mouseBtn)
+						if ppYield then return end
+						local cur = Assignments:GetClassBuff(pRef, clsRef)
+						if _G.IsShiftKeyDown and _G.IsShiftKeyDown() then
+							applyPaladin(cur and cur.familyID or nil, not (cur and cur.locked))
+						elseif mouseBtn == "RightButton" then
+							applyPaladin(nil, true)
+						else
+							Theme.ShowDropdownMenu(btnSelf, MatrixFrame:BuildPaladinClassMenu(pRef, clsRef, applyPaladin))
+						end
+					end,
+					function(_, delta)
+						if ppYield then return end
+						local cur = Assignments:GetClassBuff(pRef, clsRef)
+						applyPaladin(cycleList(blessingCycle, cur and cur.familyID or nil, delta > 0 and -1 or 1), true)
+					end,
+					table_concat(tipLines, "\n")
+				)
+				table_insert(self.cells, cell)
+			end
+
+			-- Paladin Aura Cell
+			local aEntry = Assignments:GetPaladinAura(pName)
+			local auraID = aEntry and aEntry.auraID or 0
+			local auraLocked = aEntry and aEntry.locked or false
+			local auraDef = auraID > 0 and Catalog.PALADIN_AURAS[auraID] or nil
+			local auraTxt = auraDef and ("|cff38bdf8" .. auraDef.shortName .. "|r") or "|cff64748b--|r"
+
+			local pRef = pName
+			local function applyAura(newAuraID, newLock)
 				if ppYield then return end
-				Assignments:SetClassBuff(pRef, clsRef, newFam, newLock)
-				LBB.Comms:BroadcastLock("CLASS", clsRef, newFam, pRef, newLock)
+				Assignments:SetPaladinAura(pRef, newAuraID, newLock)
+				LBB.Comms:BroadcastLock("AURA", pRef, tostring(newAuraID or 0), pRef, newLock)
 				LBB:RefreshUI()
 			end
 
-			local cell = makeCell(
+			local auraCell = makeCell(
 				content,
-				10 + labelW + (idx - 1) * (clsW + 2),
+				auraX,
 				y,
-				clsW,
+				auraW,
 				rowH,
-				txt,
-				locked,
+				auraTxt,
+				auraLocked,
 				nil,
-				function(_, mouseBtn)
+				function(btnSelf, mouseBtn)
 					if ppYield then return end
-					local cur = Assignments:GetClassBuff(pRef, clsRef)
+					local cur = Assignments:GetPaladinAura(pRef)
 					if _G.IsShiftKeyDown and _G.IsShiftKeyDown() then
-						applyPaladin(cur and cur.familyID or nil, not (cur and cur.locked))
+						applyAura(cur and cur.auraID or 0, not (cur and cur.locked))
 					elseif mouseBtn == "RightButton" then
-						applyPaladin(nil, true)
+						applyAura(0, true)
 					else
-						applyPaladin(cycleList(blessingCycle, cur and cur.familyID or nil, 1), true)
+						Theme.ShowDropdownMenu(btnSelf, MatrixFrame:BuildPaladinAuraMenu(pRef, applyAura))
 					end
 				end,
 				function(_, delta)
 					if ppYield then return end
-					local cur = Assignments:GetClassBuff(pRef, clsRef)
-					applyPaladin(cycleList(blessingCycle, cur and cur.familyID or nil, delta > 0 and -1 or 1), true)
+					local cur = Assignments:GetPaladinAura(pRef)
+					local nextAura = cycleList(auraCycle, cur and cur.auraID and cur.auraID > 0 and cur.auraID or nil, delta > 0 and -1 or 1)
+					applyAura(nextAura or 0, true)
 				end,
-				pName .. " -> " .. Catalog.CLASS_INFO[cls].name .. (fam and (": " .. fam.name) or ": None")
+				pName .. " Aura: " .. (auraDef and auraDef.name or "None") .. (ppYield and "" or "\nLeft-Click: Select Aura | Scroll: Cycle")
 			)
-			table_insert(self.cells, cell)
+			table_insert(self.cells, auraCell)
+			y = y + rowH + 3
 		end
-		y = y + rowH + 3
+	end
+
+	-- Section C: Local Paladin Personal Self-Buff Controls (Righteous Fury & Seal)
+	local pVec = LBB.Capabilities and LBB.Capabilities:GetPlayerVector()
+	if pVec and pVec.class == "PALADIN" then
+		y = y + 6
+		local selfCfg = Assignments:GetPaladinSelfConfig()
+		local selfLbl = self:AcquireLabel(content, 10, "LEFT", Theme.Colors.accent)
+		selfLbl:SetPoint("TOPLEFT", content, "TOPLEFT", 10, -y - 4)
+		selfLbl:SetText("My Self Buffs:")
+
+		if ppYield then
+			local yLbl = self:AcquireLabel(content, 10, "LEFT", Theme.Colors.warn)
+			yLbl:SetPoint("TOPLEFT", content, "TOPLEFT", 100, -y - 4)
+			yLbl:SetText("Righteous Fury & Seals yielded to standalone PallyPower.")
+		else
+			local rfKnown = pVec.righteousFury and pVec.righteousFury.known
+			local rfTxt = rfKnown
+				and ("Righteous Fury: " .. (selfCfg.trackRF and "|cff34d399ON|r" or "|cff94a3b8OFF|r"))
+				or "|cff64748bRighteous Fury (n/a)|r"
+			local rfBtn = makeCell(
+				content,
+				100,
+				y,
+				150,
+				22,
+				rfTxt,
+				selfCfg.trackRF,
+				Theme.Colors.header,
+				function()
+					if not rfKnown then return end
+					Assignments:SetRighteousFuryEnabled(not selfCfg.trackRF)
+					LBB:RefreshUI()
+				end,
+				nil,
+				"Opt-in Righteous Fury tracking & one-click Buff Strip tile (Prot Paladins)"
+			)
+			table_insert(self.cells, rfBtn)
+
+			local sealLabel = (selfCfg.trackSeal and selfCfg.sealName) and ("Seal: " .. selfCfg.sealName) or "Seal: Off"
+			local sealBtn = makeCell(
+				content,
+				258,
+				y,
+				200,
+				22,
+				sealLabel .. "  |cff38bdf8v|r",
+				selfCfg.trackSeal,
+				Theme.Colors.header,
+				function(btnSelf)
+					Theme.ShowDropdownMenu(btnSelf, MatrixFrame:BuildPaladinSealMenu())
+				end,
+				nil,
+				"Pick your active Paladin Seal (supports Forever Seal of Fury & native combat timer)"
+			)
+			table_insert(self.cells, sealBtn)
+		end
 	end
 end
 
@@ -486,7 +926,7 @@ function MatrixFrame:RenderTotemsTab(content)
 	end
 
 	local nameW = 140
-	local colW = 120
+	local colW = 132
 	local rowH = 24
 	for i, el in ipairs(Catalog.TOTEM_ELEMENTS) do
 		local elHdr = self:AcquireLabel(content, 10, "CENTER", Theme.Colors.muted)
@@ -536,21 +976,21 @@ function MatrixFrame:RenderTotemsTab(content)
 				txt,
 				locked,
 				nil,
-				function(_, mouseBtn)
+				function(btnSelf, mouseBtn)
 					local cur = Assignments:GetShamanTotems(sgRef, sName) or { locked = {} }
 					if _G.IsShiftKeyDown and _G.IsShiftKeyDown() then
 						applyTotem(cur[elRef], not (cur.locked and cur.locked[elRef]))
 					elseif mouseBtn == "RightButton" then
 						applyTotem(nil, true)
 					else
-						applyTotem(cycleList(totemIDs, cur[elRef], 1), true)
+						Theme.ShowDropdownMenu(btnSelf, MatrixFrame:BuildTotemMenu(sName, sgRef, elRef, applyTotem))
 					end
 				end,
 				function(_, delta)
 					local cur = Assignments:GetShamanTotems(sgRef, sName) or { locked = {} }
 					applyTotem(cycleList(totemIDs, cur[elRef], delta > 0 and -1 or 1), true)
 				end,
-				sName .. " (" .. elRef .. "): " .. (def and def.name or "None")
+				sName .. " (" .. elRef .. "): " .. (def and def.name or "None") .. "\nLeft-Click: Dropdown | Scroll: Cycle"
 			)
 			table_insert(self.cells, cell)
 		end
@@ -570,7 +1010,7 @@ function MatrixFrame:RenderConsumablesTab(content)
 	y = y + 20
 
 	local cols = { "Player", "Well Fed", "Flask / Elixir", "Weapon Oil" }
-	local widths = { 180, 120, 140, 120 }
+	local widths = { 210, 140, 150, 140 }
 	local x = 10
 	for i, title in ipairs(cols) do
 		local c = self:AcquireLabel(content, 10, i == 1 and "LEFT" or "CENTER", Theme.Colors.muted)
@@ -581,7 +1021,7 @@ function MatrixFrame:RenderConsumablesTab(content)
 	end
 	y = y + 18
 
-	local maxRows = 12
+	local maxRows = 13
 	for idx = 1, math.min(#Assignments.roster, maxRows) do
 		local m = Assignments.roster[idx]
 		local st = report.consumables[m.name] or {}
@@ -613,7 +1053,6 @@ function MatrixFrame:Refresh()
 		return
 	end
 	local Theme = LBB.Theme
-	-- Highlight active tab button
 	for tabID, btn in pairs(self.frame._tabBtns) do
 		if tabID == self.activeTab then
 			btn._baseBg = Theme.Colors.tileHover
@@ -626,7 +1065,6 @@ function MatrixFrame:Refresh()
 		end
 	end
 
-	-- Update PallyPower bridge badge
 	local ppYield = LBB.Comms:IsPallyPowerLoaded()
 	if ppYield then
 		self.frame._ppStatus:SetText("PLPWR: Yielded to PallyPower")

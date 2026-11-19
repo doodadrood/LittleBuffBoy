@@ -55,17 +55,24 @@ local function formatDutyScope(duty)
 			table_insert(parts, "G" .. tostring(sg))
 		end
 		return table_concat(parts, ", ")
-	elseif duty.kind == "CLASS_BUFF" and duty.classes then
+	elseif duty.kind == "CLASS_BUFF" then
 		local parts = {}
-		for _, cls in ipairs(duty.classes) do
+		for _, cls in ipairs(duty.classes or {}) do
 			local info = LBB.Catalog.CLASS_INFO[cls]
 			table_insert(parts, info and info.short or cls)
+		end
+		if duty.overrideTargets and #duty.overrideTargets > 0 then
+			table_insert(parts, "+" .. table_concat(duty.overrideTargets, ", "))
 		end
 		return table_concat(parts, ", ")
 	elseif duty.kind == "TARGET_BUFF" and duty.targets then
 		return table_concat(duty.targets, ", ")
 	elseif duty.kind == "PALADIN_AURA" then
 		return "Party Aura"
+	elseif duty.kind == "RIGHTEOUS_FURY" then
+		return "Self (Prot Tank)"
+	elseif duty.kind == "PALADIN_SEAL" then
+		return "Self (Active Seal)"
 	elseif duty.kind == "SHAMAN_TOTEM" then
 		return duty.element .. " Totem"
 	end
@@ -133,10 +140,20 @@ local function createTile(parent, index)
 			_G.GameTooltip:AddDoubleLine("Reagents:", tostring(eval.reagentCount), 0.7, 0.75, 0.82, rColor[1], rColor[2], rColor[3])
 		end
 		_G.GameTooltip:AddLine(" ")
-		_G.GameTooltip:AddLine("Left-Click: Cast on next target (keeps current target)", 0.65, 0.85, 1.0)
-		if eval.hasGroup and eval.groupSpellName then
-			local rec = eval.recommendGroup and " [Recommended]" or ""
-			_G.GameTooltip:AddLine("Right-Click: " .. eval.groupSpellName .. rec, 0.5, 0.95, 0.6)
+		if duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL" then
+			_G.GameTooltip:AddLine("Left-Click: Cast on self", 0.65, 0.85, 1.0)
+			if LBB.NativeAuras and LBB.NativeAuras:IsBound(self._timer) then
+				_G.GameTooltip:AddLine("Combat timer: Native Blizzard AuraContainer active", 0.5, 0.95, 0.6)
+			end
+		else
+			_G.GameTooltip:AddLine("Left-Click: Cast on next target (keeps current target)", 0.65, 0.85, 1.0)
+			if eval.hasGroup and eval.groupSpellName then
+				local rec = eval.recommendGroup and " [Recommended]" or ""
+				_G.GameTooltip:AddLine("Right-Click: " .. eval.groupSpellName .. rec, 0.5, 0.95, 0.6)
+				if eval.hasClassOverride then
+					_G.GameTooltip:AddLine("Override active: Cast Greater first, then single override.", 0.98, 0.72, 0.18)
+				end
+			end
 		end
 		_G.GameTooltip:Show()
 	end)
@@ -241,11 +258,12 @@ function BuffStrip:Refresh()
 	local playerName = vec and vec.name or Compat.GetFullUnitName("player")
 	local duties = LBB.Assignments:GetPlayerDuties(playerName)
 
-	-- If PallyPower is loaded, do not render Paladin Blessing / Aura buttons on the Buff Strip
+	-- If PallyPower is loaded, yield ALL Paladin tiles (Blessings, Auras, Righteous Fury, and Seals)
 	local filtered = {}
 	local ppYield = LBB.Comms and LBB.Comms:IsPallyPowerLoaded()
 	for _, duty in ipairs(duties) do
-		if not (ppYield and (duty.kind == "CLASS_BUFF" or duty.kind == "PALADIN_AURA")) then
+		local isPaladinDuty = (duty.kind == "CLASS_BUFF" or duty.kind == "PALADIN_AURA" or duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL")
+		if not (ppYield and isPaladinDuty) then
 			table_insert(filtered, duty)
 		end
 	end
@@ -324,6 +342,18 @@ function BuffStrip:Refresh()
 			tile._lockDot:Hide()
 		end
 
+		-- Bind native Blizzard CustomAuraContainerTemplate combat timer overlay for Righteous Fury & Seals
+		if LBB.NativeAuras then
+			if (duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL") and eval.nativeSpellIDs then
+				if LBB.NativeAuras:BindTimer(tile, tile._timer, "player", eval.nativeSpellIDs) then
+					-- Base bar sits in red behind Blizzard's green active bar so combat drops show cleanly
+					tile._statusBar:SetColorTexture(Theme.Colors.danger[1], Theme.Colors.danger[2], Theme.Colors.danger[3], 1)
+				end
+			else
+				LBB.NativeAuras:UnbindTimer(tile._timer)
+			end
+		end
+
 		-- SecureActionButton attributes (ALWAYS routed through Combat Lockdown Queue!)
 		local targetUnit = (eval.nextTarget and eval.nextTarget.unit) or "player"
 		local singleSpell = eval.singleSpellName or ""
@@ -334,7 +364,7 @@ function BuffStrip:Refresh()
 		Compat.SetSecureAttribute(tile, "type2", "spell")
 		Compat.SetSecureAttribute(tile, "spell2", groupSpell)
 
-		if duty.kind == "PALADIN_AURA" or duty.kind == "SHAMAN_TOTEM" or duty.familyID == "BATTLE_SHOUT" then
+		if duty.kind == "PALADIN_AURA" or duty.kind == "SHAMAN_TOTEM" or duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL" or duty.familyID == "BATTLE_SHOUT" then
 			Compat.SetSecureAttribute(tile, "unit1", "player")
 			Compat.SetSecureAttribute(tile, "unit2", "player")
 		else
@@ -358,6 +388,9 @@ function BuffStrip:Refresh()
 	-- Hide unused tiles out of combat
 	for i = count + 1, #self.tiles do
 		local tile = self.tiles[i]
+		if LBB.NativeAuras and tile._timer then
+			LBB.NativeAuras:UnbindTimer(tile._timer)
+		end
 		Compat.RunOutOfCombat("strip_hide_" .. i, function()
 			tile:Hide()
 		end)

@@ -232,8 +232,12 @@ function Capabilities:ScanPlayer()
 		end
 	end
 
-	-- Paladin Auras
+	-- Paladin Auras, Righteous Fury & Seals (static catalog + dynamic C_SpellBook scan for Forever seals)
 	local knownAuras = {}
+	local righteousFury = nil
+	local knownSeals = {}
+	local knownSealsList = {}
+
 	if classToken == "PALADIN" then
 		for auraID, auraDef in ipairs(Catalog.PALADIN_AURAS) do
 			local best = findBestKnownRank(auraDef.ranks, self.pendingSpellLoads)
@@ -246,6 +250,99 @@ function Capabilities:ScanPlayer()
 					icon = best.iconID or auraDef.icon,
 					rank = best.rank,
 				}
+			end
+		end
+
+		-- Righteous Fury (25780)
+		local rfDef = Catalog.RIGHTEOUS_FURY
+		local rfBest = findBestKnownRank(rfDef.ranks, self.pendingSpellLoads)
+		if rfBest then
+			righteousFury = {
+				known = true,
+				spellID = rfBest.spellID,
+				name = rfBest.name or rfDef.name,
+				icon = rfBest.iconID or rfDef.icon,
+				allSpellIDs = { [rfBest.spellID] = true },
+			}
+		end
+
+		-- Known Seals from catalog
+		local sealsByName = {}
+		local function registerKnownSeal(id, name, shortName, spellID, icon, allIDs)
+			local existing = sealsByName[name]
+			if existing then
+				existing.allSpellIDs[spellID] = true
+				if allIDs then
+					for sid in pairs(allIDs) do
+						existing.allSpellIDs[sid] = true
+					end
+				end
+				return
+			end
+			local idSet = { [spellID] = true }
+			if allIDs then
+				for sid in pairs(allIDs) do
+					idSet[sid] = true
+				end
+			end
+			local entry = {
+				id = id,
+				name = name,
+				shortName = shortName or name:gsub("^Seal of the ", "So"):gsub("^Seal of ", "So"):sub(1, 5),
+				spellID = spellID,
+				icon = icon or 132325,
+				allSpellIDs = idSet,
+			}
+			knownSeals[id] = entry
+			sealsByName[name] = entry
+			table_insert(knownSealsList, entry)
+		end
+
+		for _, sealDef in ipairs(Catalog.PALADIN_SEALS) do
+			local best = findBestKnownRank(sealDef.ranks, self.pendingSpellLoads)
+			if best then
+				local allIDs = {}
+				for _, sid in ipairs(sealDef.ranks) do
+					allIDs[sid] = true
+				end
+				registerKnownSeal(
+					sealDef.id,
+					best.name or sealDef.name,
+					sealDef.shortName,
+					best.spellID,
+					best.iconID or sealDef.icon,
+					allIDs
+				)
+			end
+		end
+
+		-- Dynamic C_SpellBook scan for any Forever-exclusive Seal spells / extra ranks (e.g. Seal of Fury Rank 1)
+		if _G.C_SpellBook and _G.C_SpellBook.GetNumSpellBookSkillLines and _G.C_SpellBook.GetSpellBookSkillLineInfo and _G.C_SpellBook.GetSpellBookItemInfo then
+			local bank = (_G.Enum and _G.Enum.SpellBookSpellBank and _G.Enum.SpellBookSpellBank.Player) or 0
+			local numLines = Compat.SafeCall(_G.C_SpellBook.GetNumSpellBookSkillLines, 0)
+			for lineIdx = 1, numLines do
+				local lineInfo = Compat.SafeCall(_G.C_SpellBook.GetSpellBookSkillLineInfo, nil, lineIdx)
+				if type(lineInfo) == "table" and lineInfo.itemIndexOffset and lineInfo.numSpellBookItems then
+					local offset = lineInfo.itemIndexOffset
+					for slot = offset + 1, offset + lineInfo.numSpellBookItems do
+						local itemInfo = Compat.SafeCall(_G.C_SpellBook.GetSpellBookItemInfo, nil, slot, bank)
+						if type(itemInfo) == "table" and itemInfo.spellID and itemInfo.spellID > 0 then
+							local sInfo = Compat.GetSpellInfo(itemInfo.spellID)
+							if sInfo and sInfo.name and sInfo.name:find("^Seal of ") then
+								local catDef = Catalog.SEAL_BY_NAME[sInfo.name]
+								local sealID = (catDef and catDef.id) or ("SEAL_" .. sInfo.name:upper():gsub("[^A-Z0-9]+", "_"))
+								registerKnownSeal(
+									sealID,
+									sInfo.name,
+									catDef and catDef.shortName or nil,
+									itemInfo.spellID,
+									sInfo.iconID or (catDef and catDef.icon),
+									nil
+								)
+							end
+						end
+					end
+				end
 			end
 		end
 	end
@@ -280,6 +377,9 @@ function Capabilities:ScanPlayer()
 		source = "LBB",
 		buffs = knownBuffs,
 		auras = knownAuras,
+		righteousFury = righteousFury,
+		seals = knownSeals,
+		sealsList = knownSealsList,
 		totems = knownTotems,
 		reagents = reagents,
 		symbols = reagents[21177] or 0,
@@ -319,6 +419,18 @@ function Capabilities:OnSpellDataLoaded(spellID, success)
 		if a.spellID == spellID then
 			a.name = info.name
 			a.icon = info.iconID or a.icon
+			updated = true
+		end
+	end
+	if self.playerVector.righteousFury and self.playerVector.righteousFury.spellID == spellID then
+		self.playerVector.righteousFury.name = info.name
+		self.playerVector.righteousFury.icon = info.iconID or self.playerVector.righteousFury.icon
+		updated = true
+	end
+	for _, s in pairs(self.playerVector.seals or {}) do
+		if s.spellID == spellID then
+			s.name = info.name
+			s.icon = info.iconID or s.icon
 			updated = true
 		end
 	end

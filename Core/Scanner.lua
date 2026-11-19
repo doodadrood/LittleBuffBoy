@@ -55,34 +55,50 @@ end
 local function matchTotemOrAura(aura)
 	local Catalog = LBB.Catalog
 	if aura.spellId and Catalog.SPELL_ID_TO_FAMILY[aura.spellId] then
-		return Catalog.SPELL_ID_TO_FAMILY[aura.spellId], nil, nil
+		return Catalog.SPELL_ID_TO_FAMILY[aura.spellId], nil, nil, nil, nil
 	end
 	if aura.name and Catalog.AURA_NAME_TO_FAMILY[aura.name] then
-		return Catalog.AURA_NAME_TO_FAMILY[aura.name], nil, nil
+		return Catalog.AURA_NAME_TO_FAMILY[aura.name], nil, nil, nil, nil
+	end
+	-- Paladin Righteous Fury
+	if (aura.spellId == Catalog.RIGHTEOUS_FURY.spellID) or (aura.name == Catalog.RIGHTEOUS_FURY.name) then
+		return nil, nil, nil, true, nil
+	end
+	-- Paladin Seals (static catalog + dynamic "^Seal of " match for Forever seals)
+	if aura.spellId and Catalog.SEAL_SPELL_ID_TO_ID[aura.spellId] then
+		return nil, nil, nil, nil, Catalog.SEAL_SPELL_ID_TO_ID[aura.spellId]
+	end
+	if aura.name then
+		local catSeal = Catalog.SEAL_BY_NAME[aura.name]
+		if catSeal then
+			return nil, nil, nil, nil, catSeal.id
+		elseif aura.name:find("^Seal of ") then
+			return nil, nil, nil, nil, "SEAL_" .. aura.name:upper():gsub("[^A-Z0-9]+", "_")
+		end
 	end
 	-- Paladin Auras
 	for aid, def in ipairs(Catalog.PALADIN_AURAS) do
 		if aura.name == def.name then
-			return nil, aid, nil
+			return nil, aid, nil, nil, nil
 		end
 		for _, sid in ipairs(def.ranks) do
 			if aura.spellId == sid then
-				return nil, aid, nil
+				return nil, aid, nil, nil, nil
 			end
 		end
 	end
 	-- Shaman Totems
 	for tid, def in pairs(Catalog.TOTEM_BY_ID) do
 		if aura.name == def.auraName or aura.name == def.name then
-			return nil, nil, tid
+			return nil, nil, tid, nil, nil
 		end
 		for _, sid in ipairs(def.ranks) do
 			if aura.spellId == sid then
-				return nil, nil, tid
+				return nil, nil, tid, nil, nil
 			end
 		end
 	end
-	return nil, nil, nil
+	return nil, nil, nil, nil, nil
 end
 
 -- Secret-safe live unit aura scanner
@@ -97,6 +113,8 @@ function Scanner:ScanUnit(unit, unitInfo)
 		cache = {
 			families = {},
 			paladinAuras = {},
+			righteousFury = nil,
+			seals = {},
 			totems = {},
 			consumables = {},
 			wasDead = false,
@@ -110,6 +128,8 @@ function Scanner:ScanUnit(unit, unitInfo)
 		-- Death wipes raid buffs; clear cached buffs so if battle-rezzed we highlight critical missing buff
 		cache.families = {}
 		cache.paladinAuras = {}
+		cache.righteousFury = nil
+		cache.seals = {}
 		cache.totems = {}
 		cache.wasDead = true
 		cache.battleRezzed = false
@@ -117,6 +137,8 @@ function Scanner:ScanUnit(unit, unitInfo)
 			unit = unit,
 			families = {},
 			paladinAuras = {},
+			righteousFury = nil,
+			seals = {},
 			totems = {},
 			consumables = cache.consumables,
 			restricted = false,
@@ -133,6 +155,8 @@ function Scanner:ScanUnit(unit, unitInfo)
 
 	local foundFamilies = {}
 	local foundAuras = {}
+	local foundRF = nil
+	local foundSeals = {}
 	local foundTotems = {}
 	local foundConsumables = {}
 	local scanRestricted = false
@@ -149,7 +173,7 @@ function Scanner:ScanUnit(unit, unitInfo)
 		if aura.isCompletelyHidden then
 			scanRestricted = true
 		else
-			local famID, palAuraID, totemID = matchTotemOrAura(aura)
+			local famID, palAuraID, totemID, isRF, sealID = matchTotemOrAura(aura)
 			local exp = aura.expirationTime
 			local dur = aura.duration
 
@@ -166,6 +190,31 @@ function Scanner:ScanUnit(unit, unitInfo)
 					expirationTime = exp or 0,
 					duration = dur or 0,
 					source = aura.sourceUnit,
+				}
+			elseif isRF then
+				if (exp == nil or dur == nil) and cache.righteousFury then
+					exp = cache.righteousFury.expirationTime
+					dur = cache.righteousFury.duration
+				end
+				foundRF = {
+					present = true,
+					spellId = aura.spellId,
+					name = aura.name,
+					expirationTime = exp or 0,
+					duration = dur or 1800,
+				}
+			elseif sealID then
+				local cachedSeal = cache.seals and cache.seals[sealID]
+				if (exp == nil or dur == nil) and cachedSeal then
+					exp = cachedSeal.expirationTime
+					dur = cachedSeal.duration
+				end
+				foundSeals[sealID] = {
+					present = true,
+					spellId = aura.spellId,
+					name = aura.name,
+					expirationTime = exp or 0,
+					duration = dur or 30,
 				}
 			elseif palAuraID then
 				foundAuras[palAuraID] = true
@@ -203,6 +252,8 @@ function Scanner:ScanUnit(unit, unitInfo)
 		-- Full readable scan: update cache authoritatively
 		cache.families = foundFamilies
 		cache.paladinAuras = foundAuras
+		cache.righteousFury = foundRF
+		cache.seals = foundSeals
 		cache.totems = foundTotems
 		cache.consumables = foundConsumables
 		if next(foundFamilies) ~= nil then
@@ -212,6 +263,8 @@ function Scanner:ScanUnit(unit, unitInfo)
 			unit = unit,
 			families = foundFamilies,
 			paladinAuras = foundAuras,
+			righteousFury = foundRF,
+			seals = foundSeals,
 			totems = foundTotems,
 			consumables = foundConsumables,
 			restricted = false,
@@ -229,6 +282,25 @@ function Scanner:ScanUnit(unit, unitInfo)
 	for famID, entry in pairs(foundFamilies) do
 		mergedFamilies[famID] = entry
 		cache.families[famID] = entry
+	end
+
+	local mergedRF = foundRF
+	if not mergedRF and cache.righteousFury and (cache.righteousFury.expirationTime == 0 or cache.righteousFury.expirationTime > now) then
+		mergedRF = cache.righteousFury
+	end
+	if foundRF then
+		cache.righteousFury = foundRF
+	end
+
+	local mergedSeals = {}
+	for sid, entry in pairs(cache.seals or {}) do
+		if entry.expirationTime == 0 or entry.expirationTime > now then
+			mergedSeals[sid] = entry
+		end
+	end
+	for sid, entry in pairs(foundSeals) do
+		mergedSeals[sid] = entry
+		cache.seals[sid] = entry
 	end
 
 	local mergedConsumables = {}
@@ -262,6 +334,8 @@ function Scanner:ScanUnit(unit, unitInfo)
 		unit = unit,
 		families = mergedFamilies,
 		paladinAuras = mergedAuras,
+		righteousFury = mergedRF,
+		seals = mergedSeals,
 		totems = mergedTotems,
 		consumables = mergedConsumables,
 		restricted = true,
@@ -295,12 +369,20 @@ local function collectDutyTargets(duty, roster)
 	local Catalog = LBB.Catalog
 	local targets = {}
 
-	if duty.kind == "PALADIN_AURA" or duty.kind == "SHAMAN_TOTEM" then
+	if duty.kind == "PALADIN_AURA" or duty.kind == "SHAMAN_TOTEM" or duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL" then
 		for _, m in ipairs(roster) do
 			if m.name == duty.caster then
 				table_insert(targets, m)
 				break
 			end
+		end
+		if #targets == 0 and LBB.Compat.UnitExists("player") then
+			table_insert(targets, {
+				name = duty.caster,
+				unit = "player",
+				online = true,
+				alive = not LBB.Compat.UnitIsDeadOrGhost("player"),
+			})
 		end
 		return targets
 	end
@@ -325,8 +407,17 @@ local function collectDutyTargets(duty, roster)
 		for _, cls in ipairs(duty.classes or {}) do
 			allowedClasses[cls] = true
 		end
+		local excluded = duty.excludedTargets or {}
+		local includedOverrides = {}
+		for _, tName in ipairs(duty.overrideTargets or {}) do
+			includedOverrides[tName] = true
+		end
+		local seen = {}
 		for _, m in ipairs(roster) do
-			if allowedClasses[m.class] then
+			local matchClass = allowedClasses[m.class] and not excluded[m.name]
+			local matchOverride = includedOverrides[m.name] == true
+			if (matchClass or matchOverride) and not seen[m.name] then
+				seen[m.name] = true
 				table_insert(targets, m)
 			end
 		end
@@ -353,7 +444,7 @@ function Scanner:EvaluateDuty(duty, roster, options)
 	local refreshThreshold = (options and options.refreshThreshold) or (LBB.DB and LBB.DB.refreshThreshold) or self.DEFAULT_REFRESH_THRESHOLD
 
 	local playerVec = LBB.Capabilities:GetPlayerVector()
-	local singleSpellName, groupSpellName, hasGroup, icon, groupThreshold
+	local singleSpellName, groupSpellName, hasGroup, icon, groupThreshold, nativeSpellIDs
 	local fam = duty.familyID and Catalog.GetFamily(duty.familyID) or nil
 
 	if duty.kind == "PALADIN_AURA" then
@@ -361,6 +452,20 @@ function Scanner:EvaluateDuty(duty, roster, options)
 		local known = playerVec and playerVec.auras and playerVec.auras[duty.auraID]
 		singleSpellName = (known and known.name) or (def and def.name)
 		icon = (known and known.icon) or (def and def.icon)
+	elseif duty.kind == "RIGHTEOUS_FURY" then
+		local def = Catalog.RIGHTEOUS_FURY
+		local known = playerVec and playerVec.righteousFury
+		singleSpellName = (known and known.name) or duty.spellName or def.name
+		icon = (known and known.icon) or duty.icon or def.icon
+		nativeSpellIDs = (known and known.allSpellIDs) or { [def.spellID] = true }
+	elseif duty.kind == "PALADIN_SEAL" then
+		local known = playerVec and playerVec.seals and duty.sealID and playerVec.seals[duty.sealID]
+		local def = duty.sealID and Catalog.SEAL_BY_ID[duty.sealID]
+		singleSpellName = (known and known.name) or duty.spellName or (def and def.name)
+		icon = (known and known.icon) or duty.icon or (def and def.icon) or 132325
+		nativeSpellIDs = (known and known.allSpellIDs) or duty.allSpellIDs or (duty.spellID and { [duty.spellID] = true }) or {}
+		-- Seals last 30s; warn only under 6s instead of 180s
+		refreshThreshold = math_min(refreshThreshold, 6)
 	elseif duty.kind == "SHAMAN_TOTEM" then
 		local def = Catalog.TOTEM_BY_ID[duty.totemID]
 		local known = playerVec and playerVec.totems and playerVec.totems[duty.element] and playerVec.totems[duty.element][duty.totemID]
@@ -397,6 +502,18 @@ function Scanner:EvaluateDuty(duty, roster, options)
 			if duty.kind == "PALADIN_AURA" then
 				present = scan.paladinAuras[duty.auraID] == true
 				remaining = present and 3600 or 0
+			elseif duty.kind == "RIGHTEOUS_FURY" then
+				local rf = scan.righteousFury
+				if rf and rf.present then
+					present = true
+					remaining = self:GetRemainingSeconds(rf, now)
+				end
+			elseif duty.kind == "PALADIN_SEAL" then
+				local s = duty.sealID and scan.seals and scan.seals[duty.sealID]
+				if s and s.present then
+					present = true
+					remaining = self:GetRemainingSeconds(s, now)
+				end
 			elseif duty.kind == "SHAMAN_TOTEM" then
 				present = scan.totems[duty.totemID] == true
 				remaining = present and 120 or 0
@@ -502,6 +619,8 @@ function Scanner:EvaluateDuty(duty, roster, options)
 		singleSpellName = singleSpellName,
 		groupSpellName = groupSpellName,
 		hasGroup = hasGroup,
+		nativeSpellIDs = nativeSpellIDs,
+		hasClassOverride = duty.hasClassOverride and true or false,
 		totalEligible = totalEligible,
 		buffedCount = buffedCount,
 		missingCount = missingCount,

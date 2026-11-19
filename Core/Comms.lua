@@ -293,7 +293,7 @@ function Comms:SendRequest(channel)
 	return okLbb or okPP
 end
 
-function Comms:BroadcastLock(scope, key, buffID, casterName, locked)
+function Comms:BroadcastLock(scope, key, buffID, casterName, locked, extraClass)
 	local payload = table_concat({
 		"LOCK",
 		escapeField(scope),
@@ -301,16 +301,27 @@ function Comms:BroadcastLock(scope, key, buffID, casterName, locked)
 		escapeField(buffID or ""),
 		escapeField(casterName or ""),
 		locked and "1" or "0",
+		escapeField(extraClass or ""),
 	}, "|")
 	self:SendLBB(payload)
 
-	-- Mirror Paladin blessing / aura locks to PLPWR peers when not yielded to PallyPower
+	-- Mirror Paladin blessing / per-player override / aura locks to PLPWR peers when not yielded to PallyPower
 	if not self:IsPallyPowerLoaded() then
 		if scope == "CLASS" then
 			local clsID = LBB.Catalog.CLASS_TO_ID[key]
 			local ppID = (buffID and LBB.Catalog.FAMILY_TO_PALLYPOWER_ID[buffID]) or 0
 			if clsID and casterName then
 				self:SendPLPWRAssign(casterName, clsID, ppID)
+			end
+		elseif scope == "NORMAL" and casterName and key then
+			local clsToken = extraClass
+			if (not clsToken or clsToken == "") and LBB.Assignments.rosterByName[key] then
+				clsToken = LBB.Assignments.rosterByName[key].class
+			end
+			local clsID = clsToken and LBB.Catalog.CLASS_TO_ID[clsToken]
+			local ppID = (buffID and LBB.Catalog.FAMILY_TO_PALLYPOWER_ID[buffID]) or 0
+			if clsID then
+				self:SendPLPWRNormalAssign(casterName, clsID, key, ppID)
 			end
 		elseif scope == "AURA" and casterName then
 			local auraID = tonumber(buffID) or 0
@@ -378,6 +389,13 @@ function Comms:HandleLBBMessage(sender, payload, distribution)
 		elseif scope == "CLASS" then
 			if not self:IsPallyPowerLoaded() and casterName and key then
 				LBB.Assignments:SetClassBuff(casterName, key, buffID, locked)
+				self:NotifyChange("LOCK", scope)
+			end
+		elseif scope == "NORMAL" then
+			if not self:IsPallyPowerLoaded() and casterName and key then
+				local clsToken = fields[7]
+				if clsToken == "" then clsToken = nil end
+				LBB.Assignments:SetPaladinNormalOverride(casterName, key, clsToken, buffID, locked)
 				self:NotifyChange("LOCK", scope)
 			end
 		elseif scope == "TARGET" then
@@ -513,6 +531,31 @@ function Comms:SendPLPWRSelf(target)
 	local auraMsg = self:BuildPLPWRAuraSelf(vec, LBB.Assignments)
 	if auraMsg then
 		self:SendPLPWR(auraMsg, channel, target)
+	end
+	-- Also transmit any per-player normal overrides in PallyPower NASSIGN format (batched 5 per packet)
+	local normMap = LBB.Assignments.paladinNormalOverrides[vec.name]
+	if normMap then
+		local entries = {}
+		local tNames = {}
+		for tName in pairs(normMap) do
+			table_insert(tNames, tName)
+		end
+		table.sort(tNames)
+		for _, tName in ipairs(tNames) do
+			local ov = normMap[tName]
+			local cls = ov.class or (LBB.Assignments.rosterByName[tName] and LBB.Assignments.rosterByName[tName].class)
+			local clsID = cls and LBB.Catalog.CLASS_TO_ID[cls]
+			local bid = ov.familyID and LBB.Catalog.FAMILY_TO_PALLYPOWER_ID[ov.familyID]
+			if clsID and bid and bid > 0 then
+				table_insert(entries, string_format("%s %d %s %d", Comms.WirePPName(vec.name), clsID, Comms.WirePPName(tName), bid))
+			end
+		end
+		local idx = 1
+		while idx <= #entries do
+			local last = math_min(idx + 4, #entries)
+			self:SendPLPWR("NASSIGN " .. table_concat(entries, "@", idx, last), channel, target)
+			idx = idx + 5
+		end
 	end
 	local sym = vec.symbols or LBB.Compat.GetItemCount(21177)
 	local freeFlag = (LBB.DB and LBB.DB.freeAssign) and "YES" or "NO"

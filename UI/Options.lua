@@ -37,7 +37,7 @@ function Options:Init()
 	end
 	local Theme = LBB.Theme
 	local f = _G.CreateFrame("Frame", "LittleBuffBoyOptionsFrame", _G.UIParent)
-	f:SetSize(350, 320)
+	f:SetSize(350, 386)
 	f:SetPoint("CENTER", _G.UIParent, "CENTER", 0, 20)
 	f:SetMovable(true)
 	f:SetClampedToScreen(true)
@@ -182,6 +182,39 @@ function Options:Init()
 	end
 	trBtn._refresh()
 	table.insert(f._refreshables, trBtn)
+	y = y + 32
+
+	-- Paladin Self Buffs (Righteous Fury opt-in + Seal dropdown)
+	table.insert(f._refreshables, makeToggleRow(f, y, "Paladin: Track Righteous Fury",
+		function()
+			local cfg = LBB.Assignments and LBB.Assignments:GetPaladinSelfConfig()
+			return cfg and cfg.trackRF or false
+		end,
+		function(v)
+			LBB.Assignments:SetRighteousFuryEnabled(v)
+			LBB:RefreshUI()
+		end
+	))
+	y = y + 28
+
+	local sealRow = _G.CreateFrame("Frame", nil, f)
+	sealRow:SetSize(320, 24)
+	sealRow:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -y)
+	local sLbl = Theme.CreateFontString(sealRow, 11, "LEFT", Theme.Colors.text)
+	sLbl:SetPoint("LEFT", sealRow, "LEFT", 0, 0)
+	sLbl:SetText("Paladin: Active Seal")
+	local sBtn = Theme.CreateButton(sealRow, "Off", 160, 20, function(self)
+		if LBB.MatrixFrame and LBB.MatrixFrame.BuildPaladinSealMenu then
+			Theme.ShowDropdownMenu(self, LBB.MatrixFrame:BuildPaladinSealMenu())
+		end
+	end)
+	sBtn:SetPoint("RIGHT", sealRow, "RIGHT", 0, 0)
+	sBtn._refresh = function()
+		local cfg = LBB.Assignments and LBB.Assignments:GetPaladinSelfConfig()
+		sBtn._label:SetText((cfg and cfg.trackSeal and cfg.sealName) and cfg.sealName or "Off")
+	end
+	sBtn._refresh()
+	table.insert(f._refreshables, sBtn)
 	y = y + 32
 
 	-- PallyPower Bridge Status

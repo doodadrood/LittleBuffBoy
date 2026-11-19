@@ -18,6 +18,7 @@ Core/Comms.lua
 Core/Scanner.lua
 Core/Tracking.lua
 UI/Theme.lua
+UI/NativeAuras.lua
 UI/BuffStrip.lua
 UI/MatrixFrame.lua
 UI/RaidIndicators.lua

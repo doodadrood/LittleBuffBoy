@@ -50,7 +50,10 @@ function Mock.New()
 		inGroup = false,
 		inInstanceGroup = false,
 		knownSpells = {},
+		spellBookExtras = {}, -- optional list of { spellID, name, iconID } exposed via C_SpellBook skill lines
 		spellInfo = {},
+		nativeAuraEnabled = false,
+		nativeAuraSlots = {},
 		requestedSpellLoads = {},
 		spellInRange = {}, -- [unit] = { [spell] = true/false/nil }
 		itemCounts = {},
@@ -112,6 +115,15 @@ function Mock.New()
 			maxRange = 30,
 			spellID = spellID,
 		}
+	end
+
+	function env:SetSpellBookExtra(spellID, name, iconID)
+		table_insert(state.spellBookExtras, { spellID = spellID, name = name, iconID = iconID })
+		env:SetKnownSpell(spellID, name, iconID)
+	end
+
+	function env:EnableNativeAuraMock(enabled)
+		state.nativeAuraEnabled = enabled and true or false
 	end
 
 	function env:SetTalent(name, rank)
@@ -324,6 +336,19 @@ function Mock.New()
 			IsSpellKnown = function(spellID)
 				return state.knownSpells[spellID] == true
 			end,
+			GetNumSpellBookSkillLines = function()
+				return #state.spellBookExtras > 0 and 1 or 0
+			end,
+			GetSpellBookSkillLineInfo = function(idx)
+				if idx == 1 then
+					return { itemIndexOffset = 0, numSpellBookItems = #state.spellBookExtras }
+				end
+				return nil
+			end,
+			GetSpellBookItemInfo = function(slot)
+				local item = state.spellBookExtras[slot]
+				return item and { spellID = item.spellID } or nil
+			end,
 		}
 
 		_G.C_UnitAuras = {
@@ -413,6 +438,12 @@ function Mock.New()
 			IsAddOnLoaded = function(name)
 				return state.loadedAddons[name] == true
 			end,
+			LoadAddOn = function(name)
+				if name == "Blizzard_AuraContainer" and state.nativeAuraEnabled then
+					return true
+				end
+				return false, "DISABLED"
+			end,
 			GetAddOnMetadata = function(name, field)
 				if field == "Version" then
 					return "0.1.0"
@@ -420,6 +451,42 @@ function Mock.New()
 				return nil
 			end,
 		}
+
+		-- Optional Blizzard_AuraContainer / C_DurationUtil mock (activated when env:EnableNativeAuraMock(true))
+		_G.C_XMLUtil = {
+			GetTemplateInfo = function(name)
+				if name == "CustomAuraContainerTemplate" and state.nativeAuraEnabled then
+					return { name = name }
+				end
+				return nil
+			end,
+		}
+		_G.C_StringUtil = {
+			CreateNumericRuleFormatter = function()
+				return { AddBreakpoint = function() end }
+			end,
+		}
+		_G.C_CurveUtil = {
+			CreateColorCurve = function()
+				return { SetType = function() end, AddPoint = function() end }
+			end,
+		}
+		_G.C_DurationUtil = {
+			CreateDurationTextBinding = function()
+				return {
+					SetFormatter = function() end,
+					SetTextColorCurve = function() end,
+					SetExpiredText = function() end,
+					SetZeroDurationText = function() end,
+					SetUpdateInterval = function() end,
+				}
+			end,
+		}
+		_G.Enum.DurationTextBindingProperty = { RemainingPercent = 1 }
+		_G.Enum.NumericRuleFormatRounding = { Down = 1 }
+		_G.Enum.LuaCurveType = { Linear = 1 }
+		_G.AuraContainerSortMethod = { ExpirationOnly = 1 }
+		_G.CreateColor = function(r, g, b, a) return { r = r, g = g, b = b, a = a } end
 
 		-- Modern C_ClassTalents + C_Traits mock
 		_G.C_ClassTalents = {
@@ -506,7 +573,33 @@ function Mock.New()
 			Hide = function() end,
 		}
 		_G.CreateFrame = function(frameType, name, parent, template)
-			return env:CreateMockFrame(frameType, name, parent, template)
+			local f = env:CreateMockFrame(frameType, name, parent, template)
+			if frameType == "AuraContainer" then
+				f._slots = {}
+				f._unit = nil
+				f._enabled = false
+				f.SetUnit = function(self, u) self._unit = u end
+				f.SetEnabled = function(self, v) self._enabled = v and true or false end
+				f.AddAuraSlot = function(self, key, filter, cfg)
+					local slotFrame = env:CreateMockFrame("Frame", nil, self)
+					slotFrame.SetDurationText = function(sf, text, opts)
+						sf._durationText = text
+						sf._durationOpts = opts
+					end
+					if cfg and cfg.initializeFrame then
+						cfg.initializeFrame(slotFrame)
+					end
+					self._slots[key] = { filter = filter, cfg = cfg, frame = slotFrame, enabled = true }
+					state.nativeAuraSlots[key] = self._slots[key]
+				end
+				f.SetAuraSlotEnabled = function(self, key, v)
+					if self._slots[key] then self._slots[key].enabled = v and true or false end
+				end
+				f.SetAuraSlotCandidateFilters = function(self, key, filter)
+					if self._slots[key] then self._slots[key].candidateFilters = filter end
+				end
+			end
+			return f
 		end
 		_G.hooksecurefunc = function(fnName, hookFn)
 			state.hooks[fnName] = hookFn
@@ -546,6 +639,7 @@ function Mock.New()
 		local LBB = env:LoadCore()
 		local uiFiles = {
 			"UI/Theme.lua",
+			"UI/NativeAuras.lua",
 			"UI/BuffStrip.lua",
 			"UI/MatrixFrame.lua",
 			"UI/RaidIndicators.lua",

@@ -173,8 +173,36 @@ function LBB:HandleSlashCommand(rawMsg)
 		end
 	elseif cmd == "sync" then
 		self:SyncGroup()
+	elseif cmd == "rf" then
+		local cfg = self.Assignments:GetPaladinSelfConfig()
+		self.Assignments:SetRighteousFuryEnabled(not cfg.trackRF)
+		self:RefreshUI()
+		self:Print("Righteous Fury tracking: " .. (cfg.trackRF and "ON" or "OFF"))
+	elseif cmd == "seal" then
+		local vec = self.Capabilities:GetPlayerVector()
+		local seals = (vec and vec.sealsList) or {}
+		if #seals == 0 then
+			self:Print("No Paladin Seals discovered on this character.")
+		else
+			local cfg = self.Assignments:GetPaladinSelfConfig()
+			local nextIdx = 1
+			for i, s in ipairs(seals) do
+				if cfg.trackSeal and cfg.sealID == s.id then
+					nextIdx = i + 1
+					break
+				end
+			end
+			if nextIdx > #seals then
+				self.Assignments:SetSelectedSeal(nil)
+				self:Print("Paladin Seal tracking: OFF")
+			else
+				self.Assignments:SetSelectedSeal(seals[nextIdx])
+				self:Print("Paladin Seal set to: " .. seals[nextIdx].name)
+			end
+			self:RefreshUI()
+		end
 	else
-		self:Print("Commands: /lbb [ui | lock | auto | reset | status | nudge | sync | options]")
+		self:Print("Commands: /lbb [ui | lock | auto | reset | status | nudge | sync | rf | seal | options]")
 	end
 end
 
@@ -210,6 +238,9 @@ function LBB:OnEvent(event, ...)
 		if self.DB and self.DB.autoNegotiate ~= false then
 			self:RunNegotiator(false)
 		end
+		if self.ReminderPill then
+			self.ReminderPill:UpdateProtPrompt()
+		end
 		self.Comms:BroadcastCapabilities()
 		self.Comms:SendRequest()
 		if not self.Comms:IsPallyPowerLoaded() then
@@ -219,10 +250,13 @@ function LBB:OnEvent(event, ...)
 		return
 	end
 
-	if event == "GROUP_ROSTER_UPDATE" then
+	if event == "GROUP_ROSTER_UPDATE" or event == "PLAYER_ROLES_ASSIGNED" then
 		self.Assignments:RefreshRosterFromGame()
 		if self.DB and self.DB.autoNegotiate ~= false then
 			self:RunNegotiator(false)
+		end
+		if self.ReminderPill then
+			self.ReminderPill:UpdateProtPrompt()
 		end
 		self.Comms:BroadcastCapabilities()
 		self:RefreshUI()
@@ -314,6 +348,7 @@ function LBB:Bootstrap()
 		"PLAYER_ENTERING_WORLD",
 		"UNIT_AURA",
 		"GROUP_ROSTER_UPDATE",
+		"PLAYER_ROLES_ASSIGNED",
 		"READY_CHECK",
 		"PLAYER_REGEN_ENABLED",
 		"PLAYER_REGEN_DISABLED",

@@ -13,6 +13,7 @@ local table_sort = table.sort
 local table_concat = table.concat
 
 ReminderPill.trackPill = nil
+ReminderPill.protPill = nil
 ReminderPill.nudgeFrame = nil
 ReminderPill.nudgeLines = {}
 ReminderPill.lastReport = nil
@@ -98,6 +99,54 @@ function ReminderPill:UpdateTrackingPill(status)
 		self.trackPill:Show()
 	else
 		self.trackPill:Hide()
+	end
+end
+
+-- =========================================================================
+-- 1b. Prot Paladin Opt-In Prompt Pill (auto-prompt when Tank role detected)
+-- =========================================================================
+
+function ReminderPill:InitProtPill()
+	if self.protPill then
+		return self.protPill
+	end
+	local Theme = LBB.Theme
+	local pill = _G.CreateFrame("Frame", "LittleBuffBoyProtPromptPill", _G.UIParent)
+	pill:SetSize(320, 32)
+	pill:SetPoint("TOP", _G.UIParent, "TOP", 0, -126)
+	pill:SetFrameStrata("DIALOG")
+	Theme.ApplyPanel(pill, Theme.Colors.panel, Theme.Colors.accent)
+
+	local lbl = Theme.CreateFontString(pill, 11, "LEFT", Theme.Colors.text)
+	lbl:SetPoint("LEFT", pill, "LEFT", 10, 0)
+	lbl:SetText("Tank Paladin: Enable Righteous Fury & Seal?")
+
+	local btnYes = Theme.CreateButton(pill, "Enable", 52, 20, function()
+		LBB.Assignments:EnableProtSelfDefaults()
+		pill:Hide()
+		LBB:RefreshUI()
+	end)
+	btnYes:SetPoint("RIGHT", pill, "RIGHT", -38, 0)
+
+	local btnNo = Theme.CreateButton(pill, "No", 28, 20, function()
+		LBB.Assignments:DismissProtRFPrompt()
+		pill:Hide()
+	end)
+	btnNo:SetPoint("RIGHT", pill, "RIGHT", -6, 0)
+
+	pill:Hide()
+	self.protPill = pill
+	return pill
+end
+
+function ReminderPill:UpdateProtPrompt()
+	if not self.protPill then
+		self:InitProtPill()
+	end
+	if LBB.Assignments and LBB.Assignments:ShouldPromptProtRF() then
+		self.protPill:Show()
+	else
+		self.protPill:Hide()
 	end
 end
 
@@ -318,6 +367,7 @@ end
 
 function ReminderPill:Init()
 	self:InitTrackPill()
+	self:InitProtPill()
 	self:InitNudgeBar()
 	LBB.Tracking:OnStatusChanged(function(status)
 		self:UpdateTrackingPill(status)

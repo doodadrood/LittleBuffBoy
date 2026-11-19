@@ -590,6 +590,38 @@ Catalog.PALADIN_AURAS = {
 	[7] = { id = "SANCTITY_AURA",    pallyPowerID = 7, name = "Sanctity Aura",          shortName = "SancA", icon = 135934, ranks = { 20218 }, talentGated = true },
 }
 
+-- Paladin Personal Self-Buffs: Righteous Fury & Seals (including WoW: Forever Seal of Fury)
+Catalog.RIGHTEOUS_FURY = {
+	id = "RIGHTEOUS_FURY",
+	spellID = 25780,
+	ranks = { 25780 },
+	name = "Righteous Fury",
+	shortName = "RF",
+	icon = 135962, -- Spell_Holy_SealOfFury
+	defaultDuration = 1800,
+}
+
+Catalog.PALADIN_SEALS = {
+	{ id = "SEAL_OF_RIGHTEOUSNESS", name = "Seal of Righteousness", shortName = "SoR",  icon = 132325, duration = 30, ranks = { 21084, 20293, 20292, 20291, 20290, 20289, 20288, 20287, 20154 } },
+	{ id = "SEAL_OF_COMMAND",       name = "Seal of Command",       shortName = "SoC",  icon = 132347, duration = 30, ranks = { 20920, 20919, 20918, 20915, 20375 }, talentGated = true },
+	{ id = "SEAL_OF_THE_CRUSADER",  name = "Seal of the Crusader",  shortName = "SotC", icon = 135924, duration = 30, ranks = { 20308, 20307, 20306, 20305, 20162, 21082 } },
+	{ id = "SEAL_OF_JUSTICE",       name = "Seal of Justice",       shortName = "SoJ",  icon = 135971, duration = 30, ranks = { 20164 } },
+	{ id = "SEAL_OF_LIGHT",         name = "Seal of Light",         shortName = "SoL",  icon = 135917, duration = 30, ranks = { 20349, 20348, 20347, 20165 } },
+	{ id = "SEAL_OF_WISDOM",        name = "Seal of Wisdom",        shortName = "SoW",  icon = 135960, duration = 30, ranks = { 20357, 20356, 20166 } },
+	{ id = "SEAL_OF_FURY",          name = "Seal of Fury",          shortName = "SoF",  icon = 135962, duration = 30, ranks = { 1311656 }, isTankSeal = true },
+}
+
+Catalog.SEAL_BY_ID = {}
+Catalog.SEAL_BY_NAME = {}
+Catalog.SEAL_SPELL_ID_TO_ID = {}
+for _, sealDef in ipairs(Catalog.PALADIN_SEALS) do
+	Catalog.SEAL_BY_ID[sealDef.id] = sealDef
+	Catalog.SEAL_BY_NAME[sealDef.name] = sealDef
+	for _, sid in ipairs(sealDef.ranks) do
+		Catalog.SEAL_SPELL_ID_TO_ID[sid] = sealDef.id
+	end
+end
+
 -- Paladin class blessing priority templates
 Catalog.PALADIN_CLASS_PRIORITIES = {
 	WARRIOR = { "BOK", "BOM", "BOL", "BOSANC", "BOSALV" },

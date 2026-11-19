@@ -289,6 +289,134 @@ function Assignments:SetPaladinNormalOverride(casterName, targetName, classToken
 	}
 end
 
+function Assignments:GetPaladinNormalOverride(casterName, targetName)
+	return self.paladinNormalOverrides[casterName] and self.paladinNormalOverrides[casterName][targetName] or nil
+end
+
+function Assignments:GetPaladinNormalOverridesForClass(casterName, classToken)
+	local out = {}
+	local byTarget = self.paladinNormalOverrides[casterName]
+	if not byTarget then
+		return out
+	end
+	for targetName, entry in pairs(byTarget) do
+		local member = self.rosterByName[targetName]
+		local cls = entry.class or (member and member.class)
+		if cls == classToken and entry.familyID then
+			table_insert(out, {
+				target = targetName,
+				class = cls,
+				familyID = entry.familyID,
+				locked = entry.locked and true or false,
+			})
+		end
+	end
+	table_sort(out, function(a, b)
+		return a.target < b.target
+	end)
+	return out
+end
+
+function Assignments:ClearPaladinNormalOverridesForClass(casterName, classToken)
+	local byTarget = self.paladinNormalOverrides[casterName]
+	if not byTarget then
+		return
+	end
+	for targetName, entry in pairs(byTarget) do
+		local member = self.rosterByName[targetName]
+		local cls = entry.class or (member and member.class)
+		if cls == classToken then
+			byTarget[targetName] = nil
+		end
+	end
+end
+
+-- Per-character Paladin Self-Buff config (Righteous Fury & Seal opt-in)
+function Assignments:GetPaladinSelfConfig()
+	if not LBB.CharDB then
+		LBB.CharDB = {}
+	end
+	if not LBB.CharDB.paladinSelf then
+		LBB.CharDB.paladinSelf = {
+			trackRF = false,
+			trackSeal = false,
+			sealID = nil,
+			sealName = nil,
+			tankPrompted = false,
+		}
+	end
+	return LBB.CharDB.paladinSelf
+end
+
+function Assignments:SetRighteousFuryEnabled(enabled)
+	local cfg = self:GetPaladinSelfConfig()
+	cfg.trackRF = enabled and true or false
+	cfg.tankPrompted = true
+	return cfg
+end
+
+function Assignments:SetSelectedSeal(sealEntry)
+	local cfg = self:GetPaladinSelfConfig()
+	if not sealEntry then
+		cfg.trackSeal = false
+		cfg.sealID = nil
+		cfg.sealName = nil
+	else
+		cfg.trackSeal = true
+		cfg.sealID = sealEntry.id
+		cfg.sealName = sealEntry.name
+		cfg.tankPrompted = true
+	end
+	return cfg
+end
+
+function Assignments:EnableProtSelfDefaults()
+	local cfg = self:GetPaladinSelfConfig()
+	local vec = LBB.Capabilities and LBB.Capabilities:GetPlayerVector()
+	cfg.tankPrompted = true
+	if vec and vec.righteousFury and vec.righteousFury.known then
+		cfg.trackRF = true
+	end
+	if vec and vec.sealsList and #vec.sealsList > 0 then
+		-- Prefer Seal of Fury (Forever tank seal), else Seal of Righteousness, else first known seal
+		local pick = vec.seals.SEAL_OF_FURY or vec.seals.SEAL_OF_RIGHTEOUSNESS or vec.sealsList[1]
+		if pick then
+			cfg.trackSeal = true
+			cfg.sealID = pick.id
+			cfg.sealName = pick.name
+		end
+	end
+	return cfg
+end
+
+function Assignments:DismissProtRFPrompt()
+	local cfg = self:GetPaladinSelfConfig()
+	cfg.tankPrompted = true
+end
+
+function Assignments:ShouldPromptProtRF()
+	local vec = LBB.Capabilities and LBB.Capabilities:GetPlayerVector()
+	if not vec or vec.class ~= "PALADIN" then
+		return false
+	end
+	if not (vec.righteousFury and vec.righteousFury.known) then
+		return false
+	end
+	if LBB.Comms and LBB.Comms:IsPallyPowerLoaded() then
+		return false
+	end
+	local cfg = self:GetPaladinSelfConfig()
+	if cfg.tankPrompted or cfg.trackRF then
+		return false
+	end
+	local role = LBB.Compat.UnitGroupRolesAssigned("player")
+	if role ~= "TANK" then
+		local m = self.rosterByName[vec.name]
+		role = m and m.role or "NONE"
+	end
+	return role == "TANK"
+end
+
 function Assignments:SetPaladinAura(casterName, auraID, locked)
 	if not casterName then
 		return
@@ -371,33 +499,84 @@ function Assignments:GetPlayerDuties(playerName)
 		end
 	end
 
-	-- 2. Paladin Class Blessings (group classes by assigned blessing family so Buff Strip stays compact & smart)
+	-- 2. Paladin Class Blessings + Per-Player Overrides (PallyPower NASSIGN compatible)
 	local myClasses = self.classBuffs[playerName]
-	if myClasses then
+	local myOverrides = self.paladinNormalOverrides[playerName]
+	if myClasses or myOverrides then
 		local byFamily = {}
 		local familyOrder = {}
-		for _, cls in ipairs(Catalog.CLASS_ORDER) do
-			local e = myClasses[cls]
-			if e and e.familyID then
-				if not byFamily[e.familyID] then
-					byFamily[e.familyID] = { classes = {}, locked = false }
-					table_insert(familyOrder, e.familyID)
-				end
-				table_insert(byFamily[e.familyID].classes, cls)
-				if e.locked then
-					byFamily[e.familyID].locked = true
+		local function ensureFamily(famID)
+			if not byFamily[famID] then
+				byFamily[famID] = {
+					classes = {},
+					excludedTargets = {},
+					overrideTargets = {},
+					hasClassOverride = false,
+					locked = false,
+				}
+				table_insert(familyOrder, famID)
+			end
+			return byFamily[famID]
+		end
+
+		if myClasses then
+			for _, cls in ipairs(Catalog.CLASS_ORDER) do
+				local e = myClasses[cls]
+				if e and e.familyID then
+					local bucket = ensureFamily(e.familyID)
+					table_insert(bucket.classes, cls)
+					if e.locked then
+						bucket.locked = true
+					end
 				end
 			end
 		end
+
+		if myOverrides then
+			local sortedTargets = {}
+			for tName in pairs(myOverrides) do
+				table_insert(sortedTargets, tName)
+			end
+			table_sort(sortedTargets)
+			for _, tName in ipairs(sortedTargets) do
+				local ov = myOverrides[tName]
+				if ov and ov.familyID then
+					local member = self.rosterByName[tName]
+					local cls = ov.class or (member and member.class)
+					local classDefault = cls and myClasses and myClasses[cls] and myClasses[cls].familyID or nil
+
+					-- Exclude overridden player from their class-default blessing duty
+					if classDefault and classDefault ~= ov.familyID and byFamily[classDefault] then
+						byFamily[classDefault].excludedTargets[tName] = true
+						byFamily[classDefault].hasClassOverride = true
+					end
+
+					-- Attach player to their overridden blessing duty
+					local targetBucket = ensureFamily(ov.familyID)
+					table_insert(targetBucket.overrideTargets, tName)
+					if classDefault and classDefault ~= ov.familyID then
+						targetBucket.hasClassOverride = true
+					end
+					if ov.locked then
+						targetBucket.locked = true
+					end
+				end
+			end
+		end
+
 		for _, famID in ipairs(familyOrder) do
 			local fam = Catalog.GetFamily(famID)
+			local bucket = byFamily[famID]
 			table_insert(duties, {
 				key = "CLASS:" .. famID,
 				kind = "CLASS_BUFF",
 				familyID = famID,
 				caster = playerName,
-				classes = byFamily[famID].classes,
-				locked = byFamily[famID].locked,
+				classes = bucket.classes,
+				excludedTargets = bucket.excludedTargets,
+				overrideTargets = bucket.overrideTargets,
+				hasClassOverride = bucket.hasClassOverride,
+				locked = bucket.locked,
 				reagentItemID = fam and fam.reagentItemID or nil,
 			})
 		end
@@ -445,6 +624,45 @@ function Assignments:GetPlayerDuties(playerName)
 			caster = playerName,
 			locked = auraEntry.locked and true or false,
 		})
+	end
+
+	-- 4b. Paladin Personal Self-Buffs: Righteous Fury & Seal (opt-in per character)
+	local localVec = LBB.Capabilities and LBB.Capabilities.playerVector
+	if localVec and localVec.name == playerName and localVec.class == "PALADIN" then
+		local selfCfg = self:GetPaladinSelfConfig()
+		if selfCfg.trackRF and localVec.righteousFury and localVec.righteousFury.known then
+			table_insert(duties, {
+				key = "SELF:RIGHTEOUS_FURY",
+				kind = "RIGHTEOUS_FURY",
+				caster = playerName,
+				spellID = localVec.righteousFury.spellID,
+				spellName = localVec.righteousFury.name,
+				icon = localVec.righteousFury.icon,
+			})
+		end
+		if selfCfg.trackSeal and (selfCfg.sealID or selfCfg.sealName) then
+			local sealInfo = (selfCfg.sealID and localVec.seals and localVec.seals[selfCfg.sealID]) or nil
+			if not sealInfo and selfCfg.sealName and localVec.sealsList then
+				for _, s in ipairs(localVec.sealsList) do
+					if s.name == selfCfg.sealName then
+						sealInfo = s
+						break
+					end
+				end
+			end
+			if sealInfo then
+				table_insert(duties, {
+					key = "SELF:SEAL",
+					kind = "PALADIN_SEAL",
+					caster = playerName,
+					sealID = sealInfo.id,
+					spellID = sealInfo.spellID,
+					spellName = sealInfo.name,
+					icon = sealInfo.icon,
+					allSpellIDs = sealInfo.allSpellIDs,
+				})
+			end
+		end
 	end
 
 	-- 5. Shaman Totems

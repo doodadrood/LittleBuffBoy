@@ -155,3 +155,180 @@ function Theme.FormatTimer(seconds)
 		return string_format("%ds", math_floor(seconds))
 	end
 end
+
+-- =========================================================================
+-- Lightweight Pooled Dark-Slate Popup Dropdown Menu (with inline Submenus)
+-- =========================================================================
+
+local MENU_ROW_H = 20
+local MENU_PAD = 4
+
+local function ensureMenuPanel(name, parent)
+	local panel = _G.CreateFrame("Frame", name, parent or _G.UIParent)
+	panel:SetFrameStrata("TOOLTIP")
+	panel:SetClampedToScreen(true)
+	panel:EnableMouse(true)
+	Theme.ApplyPanel(panel, Theme.Colors.bg, Theme.Colors.accent)
+	panel._rows = {}
+	panel:Hide()
+	return panel
+end
+
+local function populateMenuPanel(panel, items, subPanel, onCloseAll)
+	for i = 1, #panel._rows do
+		panel._rows[i]:Hide()
+	end
+
+	local maxW = 156
+	local y = MENU_PAD
+
+	for idx, item in ipairs(items or {}) do
+		local row = panel._rows[idx]
+		if not row then
+			row = _G.CreateFrame("Button", nil, panel)
+			row:SetHeight(MENU_ROW_H)
+			row:RegisterForClicks("LeftButtonUp")
+			row._hl = row:CreateTexture(nil, "BACKGROUND")
+			row._hl:SetAllPoints(row)
+			row._hl:SetColorTexture(Theme.Colors.tileHover[1], Theme.Colors.tileHover[2], Theme.Colors.tileHover[3], 0.95)
+			row._hl:Hide()
+
+			row._left = Theme.CreateFontString(row, 11, "LEFT", Theme.Colors.text)
+			row._left:SetPoint("LEFT", row, "LEFT", 8, 0)
+			row._right = Theme.CreateFontString(row, 10, "RIGHT", Theme.Colors.muted)
+			row._right:SetPoint("RIGHT", row, "RIGHT", -8, 0)
+			panel._rows[idx] = row
+		end
+
+		row:ClearAllPoints()
+		row:SetPoint("TOPLEFT", panel, "TOPLEFT", MENU_PAD, -y)
+		row:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -MENU_PAD, -y)
+		row._hl:Hide()
+
+		local prefix = ""
+		if item.checked then
+			prefix = "|cff34d399* |r"
+		elseif not item.isTitle and not item.isSeparator then
+			prefix = "  "
+		end
+
+		local textStr = prefix .. tostring(item.text or "")
+		local rightStr = item.rightText or (item.submenu and ">" or "")
+		local estW = (#tostring(item.text or "") * 7) + (#tostring(rightStr) * 7) + 38
+		if estW > maxW then
+			maxW = estW
+		end
+
+		if item.isSeparator then
+			row:SetHeight(6)
+			row._left:SetText("")
+			row._right:SetText("")
+			row:SetScript("OnClick", nil)
+			row:SetScript("OnEnter", nil)
+			row:SetScript("OnLeave", nil)
+			y = y + 6
+		elseif item.isTitle then
+			row:SetHeight(18)
+			local c = item.color or Theme.Colors.accent
+			row._left:SetTextColor(c[1], c[2], c[3], 1)
+			row._left:SetText(tostring(item.text or ""))
+			row._right:SetText("")
+			row:SetScript("OnClick", nil)
+			row:SetScript("OnEnter", function()
+				if subPanel then subPanel:Hide() end
+			end)
+			row:SetScript("OnLeave", nil)
+			y = y + 18
+		else
+			row:SetHeight(MENU_ROW_H)
+			local c = item.color or Theme.Colors.text
+			row._left:SetTextColor(c[1], c[2], c[3], 1)
+			row._left:SetText(textStr)
+			local rc = item.rightColor or (item.submenu and Theme.Colors.accent or Theme.Colors.muted)
+			row._right:SetTextColor(rc[1], rc[2], rc[3], 1)
+			row._right:SetText(rightStr)
+
+			local itemRef = item
+			row:SetScript("OnEnter", function(self)
+				self._hl:Show()
+				if subPanel then
+					if itemRef.submenu and #itemRef.submenu > 0 then
+						populateMenuPanel(subPanel, itemRef.submenu, nil, onCloseAll)
+						subPanel:ClearAllPoints()
+						subPanel:SetPoint("TOPLEFT", self, "TOPRIGHT", 4, 2)
+						subPanel:Show()
+					else
+						subPanel:Hide()
+					end
+				end
+			end)
+			row:SetScript("OnLeave", function(self)
+				self._hl:Hide()
+			end)
+			row:SetScript("OnClick", function(self)
+				if itemRef.submenu and #itemRef.submenu > 0 and subPanel then
+					populateMenuPanel(subPanel, itemRef.submenu, nil, onCloseAll)
+					subPanel:ClearAllPoints()
+					subPanel:SetPoint("TOPLEFT", self, "TOPRIGHT", 4, 2)
+					subPanel:Show()
+					return
+				end
+				if itemRef.onClick then
+					itemRef.onClick()
+				end
+				if not itemRef.keepOpen and onCloseAll then
+					onCloseAll()
+				end
+			end)
+			y = y + MENU_ROW_H
+		end
+		row:Show()
+	end
+
+	panel:SetSize(maxW, y + MENU_PAD)
+end
+
+function Theme.HideDropdownMenu()
+	if Theme._menuSub then Theme._menuSub:Hide() end
+	if Theme._menuMain then Theme._menuMain:Hide() end
+	if Theme._menuCatcher then Theme._menuCatcher:Hide() end
+end
+
+function Theme.ShowDropdownMenu(anchorFrame, items)
+	if not items or #items == 0 then
+		Theme.HideDropdownMenu()
+		return nil
+	end
+	if not Theme._menuCatcher then
+		local catcher = _G.CreateFrame("Button", "LittleBuffBoyDropdownCatcher", _G.UIParent)
+		catcher:SetAllPoints(_G.UIParent)
+		catcher:SetFrameStrata("FULLSCREEN_DIALOG")
+		catcher:EnableMouse(true)
+		catcher:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+		catcher:SetScript("OnClick", function()
+			Theme.HideDropdownMenu()
+		end)
+		catcher:Hide()
+		Theme._menuCatcher = catcher
+
+		Theme._menuMain = ensureMenuPanel("LittleBuffBoyDropdownMain", catcher)
+		Theme._menuSub = ensureMenuPanel("LittleBuffBoyDropdownSub", catcher)
+		if _G.UISpecialFrames then
+			table.insert(_G.UISpecialFrames, "LittleBuffBoyDropdownCatcher")
+		end
+	end
+
+	Theme._menuSub:Hide()
+	populateMenuPanel(Theme._menuMain, items, Theme._menuSub, Theme.HideDropdownMenu)
+
+	Theme._menuMain:ClearAllPoints()
+	if anchorFrame then
+		Theme._menuMain:SetPoint("TOPLEFT", anchorFrame, "BOTTOMLEFT", 0, -2)
+	else
+		Theme._menuMain:SetPoint("CENTER", _G.UIParent, "CENTER", 0, 0)
+	end
+
+	Theme._menuCatcher:Show()
+	Theme._menuMain:Show()
+	return Theme._menuMain
+end
