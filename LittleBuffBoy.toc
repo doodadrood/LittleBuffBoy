@@ -1,0 +1,26 @@
+## Interface: 16001
+## Title: LittleBuffBoy |cff38bdf8(LBB)|r
+## Notes: Lightweight all-class buff, totem, consumable, and minimap tracking coordinator for WoW: Forever with PallyPower interoperability.
+## Author: doodadrood
+## Version: 0.1.0
+## DefaultState: enabled
+## OptionalDeps: PallyPower
+## SavedVariables: LittleBuffBoyDB
+## SavedVariablesPerCharacter: LittleBuffBoyCharDB
+## X-Category: Buffs & Debuffs
+
+Core/Compat.lua
+Core/Catalog.lua
+Core/Capabilities.lua
+Core/Assignments.lua
+Core/Negotiator.lua
+Core/Comms.lua
+Core/Scanner.lua
+Core/Tracking.lua
+UI/Theme.lua
+UI/BuffStrip.lua
+UI/MatrixFrame.lua
+UI/RaidIndicators.lua
+UI/ReminderPill.lua
+UI/Options.lua
+Init.lua

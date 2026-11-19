@@ -1,0 +1,14 @@
+package-as: LittleBuffBoy
+
+ignore:
+  - tests
+  - scripts
+  - .agents
+  - .antigravity
+  - .git
+  - .github
+  - .gitignore
+  - .pkgmeta
+  - AGENTS.md
+  - README.md
+  - "*.md"
