@@ -330,6 +330,9 @@ end
 
 function Assignments:RefreshRosterFromGame()
 	local Compat = LBB.Compat
+	local inCombat = Compat.InCombat()
+	local prevByUnit = self.rosterByUnit or {}
+	local prevRoster = self.roster or {}
 	local members = {}
 	local inRaid = _G.IsInRaid and Compat.SafeCall(_G.IsInRaid, false)
 	local numGroup = _G.GetNumGroupMembers and Compat.SafeCall(_G.GetNumGroupMembers, 0) or 0
@@ -337,7 +340,8 @@ function Assignments:RefreshRosterFromGame()
 	if inRaid and numGroup > 0 then
 		for i = 1, numGroup do
 			local unit = "raid" .. i
-			if Compat.UnitExists(unit) then
+			local prev = prevByUnit[unit]
+			if Compat.UnitExists(unit) or (inCombat and prev) then
 				local name, rank, subgroup, _, _, fileName, _, online, isDead = nil, 0, 1, nil, nil, nil, nil, true, false
 				if _G.GetRaidRosterInfo then
 					local ok, n, r, sg, _, _, cls, _, onl, dead = pcall(_G.GetRaidRosterInfo, i)
@@ -350,23 +354,27 @@ function Assignments:RefreshRosterFromGame()
 						isDead = Compat.SafeRead(dead, false)
 					end
 				end
-				name = name or Compat.GetFullUnitName(unit)
+				name = name or Compat.GetFullUnitName(unit) or (prev and prev.name)
 				if not fileName then
 					local _, cls = Compat.UnitClass(unit)
-					fileName = cls
+					fileName = cls or (prev and prev.class)
 				end
 				if name and fileName then
+					local role = Compat.UnitGroupRolesAssigned(unit)
+					if (not role or role == "NONE") and prev and prev.role then
+						role = prev.role
+					end
 					table_insert(members, {
 						name = name,
 						unit = unit,
 						class = fileName,
-						subgroup = subgroup or 1,
-						role = Compat.UnitGroupRolesAssigned(unit),
-						guid = Compat.UnitGUID(unit) or name,
+						subgroup = subgroup or (prev and prev.subgroup) or 1,
+						role = role or "NONE",
+						guid = Compat.UnitGUID(unit) or (prev and prev.guid) or name,
 						online = online and Compat.UnitIsConnected(unit),
 						alive = (not isDead) and (not Compat.UnitIsDeadOrGhost(unit)),
-						isLeader = (rank == 2),
-						isAssist = (rank == 1),
+						isLeader = (rank == 2) or (inCombat and prev and prev.isLeader) or false,
+						isAssist = (rank == 1) or (inCombat and prev and prev.isAssist) or false,
 					})
 				end
 			end
@@ -374,34 +382,47 @@ function Assignments:RefreshRosterFromGame()
 	else
 		-- Solo or 5-man party
 		local units = { "player" }
-		if numGroup > 1 then
-			for i = 1, 4 do
-				local u = "party" .. i
-				if Compat.UnitExists(u) then
-					table_insert(units, u)
-				end
+		local partyCount = numGroup > 1 and 4 or 0
+		if partyCount == 0 and inCombat and #prevRoster > 1 then
+			partyCount = 4
+		end
+		for i = 1, partyCount do
+			local u = "party" .. i
+			if Compat.UnitExists(u) or (inCombat and prevByUnit[u]) then
+				table_insert(units, u)
 			end
 		end
 		for _, unit in ipairs(units) do
-			if Compat.UnitExists(unit) then
-				local name = Compat.GetFullUnitName(unit)
+			local prev = prevByUnit[unit]
+			if Compat.UnitExists(unit) or (inCombat and prev) then
+				local name = Compat.GetFullUnitName(unit) or (prev and prev.name)
 				local _, cls = Compat.UnitClass(unit)
+				cls = cls or (prev and prev.class)
 				if name and cls then
+					local role = Compat.UnitGroupRolesAssigned(unit)
+					if (not role or role == "NONE") and prev and prev.role then
+						role = prev.role
+					end
 					table_insert(members, {
 						name = name,
 						unit = unit,
 						class = cls,
-						subgroup = 1,
-						role = Compat.UnitGroupRolesAssigned(unit),
-						guid = Compat.UnitGUID(unit) or name,
+						subgroup = (prev and prev.subgroup) or 1,
+						role = role or "NONE",
+						guid = Compat.UnitGUID(unit) or (prev and prev.guid) or name,
 						online = Compat.UnitIsConnected(unit),
 						alive = not Compat.UnitIsDeadOrGhost(unit),
-						isLeader = _G.UnitIsGroupLeader and Compat.SafeCall(_G.UnitIsGroupLeader, false, unit) or false,
-						isAssist = _G.UnitIsGroupAssistant and Compat.SafeCall(_G.UnitIsGroupAssistant, false, unit) or false,
+						isLeader = _G.UnitIsGroupLeader and Compat.SafeCall(_G.UnitIsGroupLeader, prev and prev.isLeader or false, unit) or false,
+						isAssist = _G.UnitIsGroupAssistant and Compat.SafeCall(_G.UnitIsGroupAssistant, prev and prev.isAssist or false, unit) or false,
 					})
 				end
 			end
 		end
+	end
+
+	-- Guard against complete roster loss if Midnight combat secrets blocked unit queries mid-fight
+	if inCombat and #members <= 1 and #prevRoster > #members then
+		return self.roster
 	end
 
 	return self:SetRoster(members)

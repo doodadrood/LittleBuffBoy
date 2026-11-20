@@ -178,14 +178,34 @@ function Capabilities:ScanTracking()
 	return state
 end
 
+function Capabilities:RefreshReagents()
+	if not self.playerVector then
+		return self:ScanPlayer()
+	end
+	local Compat = LBB.Compat
+	local Catalog = LBB.Catalog
+	local vec = self.playerVector
+	local families = Catalog.GetClassFamilies(vec.class)
+	vec.reagents = vec.reagents or {}
+	for _, famID in ipairs(families) do
+		local fam = Catalog.GetFamily(famID)
+		if fam and fam.reagentItemID then
+			vec.reagents[fam.reagentItemID] = Compat.GetItemCount(fam.reagentItemID)
+		end
+	end
+	vec.symbols = vec.reagents[21177] or 0
+	return vec
+end
+
 function Capabilities:ScanPlayer()
 	local Compat = LBB.Compat
 	local Catalog = LBB.Catalog
+	local prev = self.playerVector
 
-	local playerName = Compat.GetFullUnitName("player") or "Player"
+	local playerName = Compat.GetFullUnitName("player") or (prev and prev.name) or "Player"
 	local _, classToken = Compat.UnitClass("player")
-	classToken = classToken or "PRIEST"
-	local guid = Compat.UnitGUID("player") or playerName
+	classToken = classToken or (prev and prev.class) or "PRIEST"
+	local guid = Compat.UnitGUID("player") or (prev and prev.guid) or playerName
 
 	local talents = self:ScanTalents()
 	local families = Catalog.GetClassFamilies(classToken)
@@ -369,6 +389,22 @@ function Capabilities:ScanPlayer()
 	end
 
 	self:ScanTracking()
+
+	if Compat.InCombat() and prev and prev.class == classToken then
+		if next(knownBuffs) == nil and prev.buffs then
+			knownBuffs = prev.buffs
+		end
+		if next(knownAuras) == nil and prev.auras then
+			knownAuras = prev.auras
+		end
+		if not righteousFury and prev.righteousFury then
+			righteousFury = prev.righteousFury
+		end
+		if #knownSealsList == 0 and prev.sealsList and #prev.sealsList > 0 then
+			knownSeals = prev.seals or knownSeals
+			knownSealsList = prev.sealsList
+		end
+	end
 
 	local vec = {
 		name = playerName,

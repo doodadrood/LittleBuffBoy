@@ -29,6 +29,73 @@ local TILE_H = 48
 local HEADER_W = 24
 local PAD = 4
 
+-- Blizzard Restricted Environment OnClick pre-script:
+-- Allows SecureActionButtonTemplate to rotate across eligible alive party/raid members (and @mouseover)
+-- DURING combat lockdown (where normal Lua SetAttribute is blocked)!
+local COMBAT_CLICK_PRE_SNIPPET = [[
+	if down then
+		self:SetAttribute("combat_had_down", true)
+	else
+		if self:GetAttribute("combat_had_down") then
+			self:SetAttribute("combat_had_down", false)
+			return
+		end
+	end
+	if not PlayerInCombat or not PlayerInCombat() then
+		self:SetAttribute("combat_idx", 0)
+		return
+	end
+	local list = self:GetAttribute("combat_units")
+	if not list or list == "" then
+		return
+	end
+	if SecureCmdOptionParse then
+		local mo = SecureCmdOptionParse("[@mouseover,help,nodead] mouseover")
+		if mo and mo ~= "" then
+			self:SetAttribute("unit1", mo)
+			return
+		end
+	end
+	local units = newtable and newtable() or {}
+	for u in list:gmatch("[^,]+") do
+		local okUnit = true
+		if SecureCmdOptionParse then
+			local parsed = SecureCmdOptionParse("[@" .. u .. ",help,nodead] " .. u)
+			okUnit = (parsed and parsed ~= "")
+		end
+		if okUnit then
+			units[#units + 1] = u
+		end
+	end
+	if #units > 0 then
+		local idx = (self:GetAttribute("combat_idx") or 0) + 1
+		if idx > #units then
+			idx = 1
+		end
+		self:SetAttribute("combat_idx", idx)
+		self:SetAttribute("unit1", units[idx])
+		self:SetAttribute("unit2", units[1])
+	end
+]]
+
+function BuffStrip:WrapSecureButton(btn)
+	if not btn or btn._lbbWrapped then
+		return
+	end
+	if not self.secureHeader and _G.CreateFrame then
+		local ok, hdr = pcall(_G.CreateFrame, "Frame", "LittleBuffBoySecureHeader", _G.UIParent, "SecureHandlerBaseTemplate")
+		if ok and hdr then
+			self.secureHeader = hdr
+		end
+	end
+	if self.secureHeader and _G.SecureHandlerWrapScript then
+		local ok = pcall(_G.SecureHandlerWrapScript, btn, "OnClick", self.secureHeader, COMBAT_CLICK_PRE_SNIPPET)
+		if ok then
+			btn._lbbWrapped = true
+		end
+	end
+end
+
 local function savePosition(frame)
 	if not frame or not LBB.CharDB then
 		return
@@ -145,6 +212,8 @@ local function createTile(parent, index)
 			local rangeTag = (eval.nextTarget.inRange == false) and " (Out of Range)" or ""
 			local tColor = (eval.nextTarget.inRange == false) and { 0.98, 0.72, 0.18 } or { 0.2, 0.9, 0.5 }
 			_G.GameTooltip:AddDoubleLine("Next target:", eval.nextTarget.name .. rangeTag, 0.7, 0.75, 0.82, tColor[1], tColor[2], tColor[3])
+		elseif eval.effectiveTarget and eval.effectiveTarget.name then
+			_G.GameTooltip:AddDoubleLine("Pre-staged target:", eval.effectiveTarget.name, 0.7, 0.75, 0.82, 0.5, 0.85, 1.0)
 		end
 		if eval.reagentCount ~= nil then
 			local rColor = eval.lowReagent and { 0.98, 0.35, 0.3 } or { 0.8, 0.85, 0.9 }
@@ -175,14 +244,19 @@ local function createTile(parent, index)
 	end)
 	btn:SetScript("PostClick", function(selfBtn)
 		local eval = selfBtn._eval
-		if eval and eval.nextTarget and eval.duty and LBB.Scanner then
-			local rotated = LBB.Scanner:RecordCastAttempt(eval.nextTarget.unit, eval.nextTarget.name, eval.duty.key)
+		local et = eval and (eval.effectiveTarget or eval.nextTarget)
+		if eval and et and eval.duty and LBB.Scanner then
+			local actualUnit = (selfBtn.GetAttribute and selfBtn:GetAttribute("unit1")) or et.unit
+			local member = LBB.Assignments and LBB.Assignments.rosterByUnit and LBB.Assignments.rosterByUnit[actualUnit]
+			local actualName = (member and member.name) or (actualUnit == et.unit and et.name) or actualUnit
+			local rotated = LBB.Scanner:RecordCastAttempt(actualUnit, actualName, eval.duty.key)
 			if rotated then
 				BuffStrip:Refresh()
 			end
 		end
 	end)
 
+	BuffStrip:WrapSecureButton(btn)
 	return btn
 end
 
@@ -274,15 +348,19 @@ function BuffStrip:Init()
 		self:ApplyHealthyVisibility()
 		if _G.GameTooltip then _G.GameTooltip:Hide() end
 	end)
-	autoTile:SetScript("PostClick", function()
+	autoTile:SetScript("PostClick", function(selfBtn)
 		local act = self.lastAutoAction
-		if act and act.hasAction and act.nextDuty and LBB.Scanner then
-			local rotated = LBB.Scanner:RecordCastAttempt(act.unit, act.targetName, act.nextDuty.key)
+		if act and act.nextDuty and LBB.Scanner then
+			local actualUnit = (selfBtn and selfBtn.GetAttribute and selfBtn:GetAttribute("unit1")) or act.unit
+			local member = LBB.Assignments and LBB.Assignments.rosterByUnit and LBB.Assignments.rosterByUnit[actualUnit]
+			local actualName = (member and member.name) or (actualUnit == act.unit and act.targetName) or actualUnit
+			local rotated = LBB.Scanner:RecordCastAttempt(actualUnit, actualName, act.nextDuty.key)
 			if rotated then
 				self:Refresh()
 			end
 		end
 	end)
+	self:WrapSecureButton(autoTile)
 	autoTile:Hide()
 	self.autoTile = autoTile
 
@@ -457,6 +535,8 @@ function BuffStrip:Refresh()
 			Compat.SetSecureAttribute(self.autoTile, "type2", "spell")
 			Compat.SetSecureAttribute(self.autoTile, "unit2", autoAction.groupUnit or autoAction.unit or "player")
 			Compat.SetSecureAttribute(self.autoTile, "spell2", autoAction.groupSpell or "")
+			Compat.SetSecureAttribute(self.autoTile, "combat_units", autoAction.combatUnits or autoAction.unit or "player")
+			Compat.SetSecureAttribute(self.autoTile, "combat_idx", 0)
 
 			Compat.RunOutOfCombat("strip_auto_layout", function()
 				self.autoTile:ClearAllPoints()
@@ -560,7 +640,10 @@ function BuffStrip:Refresh()
 		end
 
 		-- SecureActionButton attributes (ALWAYS routed through Combat Lockdown Queue!)
-		local targetUnit = (eval.nextTarget and eval.nextTarget.unit) or "player"
+		-- Uses `eval.effectiveTarget` so that even when all in-range members are healthy before combat starts,
+		-- `unit1` stays pre-staged to the in-range duty member whose buff will expire FIRST (or Tank) instead of resetting to "player"!
+		local et = eval.effectiveTarget or eval.nextTarget or eval.combatTarget
+		local targetUnit = (et and et.unit) or "player"
 		local groupUnit = eval.groupAnchorUnit or targetUnit
 		local singleSpell = eval.singleSpellName or ""
 		local groupSpell = (eval.hasGroup and eval.groupSpellName) or singleSpell
@@ -573,9 +656,13 @@ function BuffStrip:Refresh()
 		if duty.kind == "PALADIN_AURA" or duty.kind == "SHAMAN_TOTEM" or duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL" or duty.familyID == "BATTLE_SHOUT" then
 			Compat.SetSecureAttribute(tile, "unit1", "player")
 			Compat.SetSecureAttribute(tile, "unit2", "player")
+			Compat.SetSecureAttribute(tile, "combat_units", "player")
+			Compat.SetSecureAttribute(tile, "combat_idx", 0)
 		else
 			Compat.SetSecureAttribute(tile, "unit1", targetUnit)
 			Compat.SetSecureAttribute(tile, "unit2", groupUnit)
+			Compat.SetSecureAttribute(tile, "combat_units", eval.combatUnits or targetUnit)
+			Compat.SetSecureAttribute(tile, "combat_idx", 0)
 		end
 
 		-- Layout updates must also wait until out of combat for secure buttons

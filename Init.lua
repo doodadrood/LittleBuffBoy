@@ -402,6 +402,22 @@ function LBB:OnEvent(event, ...)
 		return
 	end
 
+	if event == "UNIT_SPELLCAST_SENT" then
+		local unit, targetName, castGUID, spellID = ...
+		if unit == "player" and self.Scanner then
+			self.Scanner:OnPlayerSpellcastSent(unit, targetName, castGUID, spellID)
+		end
+		return
+	end
+
+	if event == "UNIT_SPELLCAST_SUCCEEDED" then
+		local unit, castGUID, spellID = ...
+		if unit == "player" and self.Scanner and self.Scanner:OnPlayerSpellcastSucceeded(unit, castGUID, spellID) then
+			self:RefreshUI()
+		end
+		return
+	end
+
 	if event == "UNIT_SPELLCAST_FAILED" then
 		local unit = ...
 		if unit == "player" and self.Scanner and self.Scanner:OnPlayerCastFailed() then
@@ -418,7 +434,7 @@ function LBB:OnEvent(event, ...)
 	end
 
 	if event == "BAG_UPDATE_DELAYED" then
-		self.Capabilities:ScanPlayer()
+		self.Capabilities:RefreshReagents()
 		self:RefreshUI()
 		return
 	end
@@ -473,6 +489,8 @@ function LBB:Bootstrap()
 		"PLAYER_LOGIN",
 		"PLAYER_ENTERING_WORLD",
 		"UNIT_AURA",
+		"UNIT_SPELLCAST_SENT",
+		"UNIT_SPELLCAST_SUCCEEDED",
 		"UNIT_SPELLCAST_FAILED",
 		"UI_ERROR_MESSAGE",
 		"GROUP_ROSTER_UPDATE",

@@ -197,13 +197,30 @@ function Mock.New()
 			_width = 32,
 			_height = 32,
 			SetAttribute = function(self, k, v)
-				if self._isSecure and state.inCombat then
+				if self._isSecure and state.inCombat and not state.inRestrictedSnippet then
 					error("ADDON_ACTION_BLOCKED: SecureActionButtonTemplate:SetAttribute(" .. tostring(k) .. ") called during InCombatLockdown()")
 				end
 				self._attrs[k] = v
 			end,
 			GetAttribute = function(self, k)
 				return self._attrs[k]
+			end,
+			Click = function(self, button, down)
+				button = button or "LeftButton"
+				if self._preClickSnippet then
+					state.inRestrictedSnippet = true
+					local ok, err = pcall(self._preClickSnippet, self, button, down)
+					state.inRestrictedSnippet = false
+					if not ok then
+						error(err)
+					end
+				end
+				if self._scripts["OnClick"] then
+					self._scripts["OnClick"](self, button, down)
+				end
+				if self._scripts["PostClick"] then
+					self._scripts["PostClick"](self, button, down)
+				end
 			end,
 			RegisterEvent = function(self, ev)
 				if ev == "COMBAT_LOG_EVENT_UNFILTERED" then
@@ -309,6 +326,38 @@ function Mock.New()
 		_G.issecretvalue = Mock.IsSecret
 		_G.GetTime = function() return state.time end
 		_G.InCombatLockdown = function() return state.inCombat end
+		_G.PlayerInCombat = function() return state.inCombat end
+		_G.newtable = function() return {} end
+		_G.SecureCmdOptionParse = function(condStr)
+			if type(condStr) ~= "string" then
+				return nil
+			end
+			for clauses, result in condStr:gmatch("%[([^%]]+)%]%s*([^;]+)") do
+				result = result:match("^%s*(.-)%s*$")
+				local unit = clauses:match("@([%w_]+)") or "target"
+				local u = state.units[unit]
+				local ok = (u ~= nil and u.online ~= false)
+				if ok and clauses:find("help", 1, true) then
+					ok = (not u.charmed and not u.hostile)
+				end
+				if ok and clauses:find("nodead", 1, true) then
+					ok = (not u.dead)
+				end
+				if ok then
+					return result
+				end
+			end
+			return nil
+		end
+		_G.SecureHandlerWrapScript = function(frame, script, _, preBody)
+			if frame and script == "OnClick" and type(preBody) == "string" then
+				local chunk, err = loadstring("local self, button, down = ...; " .. preBody)
+				if not chunk then
+					error("Invalid SecureHandler snippet: " .. tostring(err))
+				end
+				frame._preClickSnippet = chunk
+			end
+		end
 		_G.GetNormalizedRealmName = function() return state.realm end
 		_G.GetRealmName = function() return state.realm end
 		_G.LE_PARTY_CATEGORY_INSTANCE = 2
