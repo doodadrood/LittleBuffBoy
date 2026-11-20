@@ -395,7 +395,7 @@ function LBB:OnEvent(event, ...)
 	end
 
 	if event == "UNIT_AURA" then
-		local unit = ...
+		local unit = self.Compat.SafeRead((...), nil)
 		if unit and (unit == "player" or self.Assignments.rosterByUnit[unit]) then
 			self:RefreshUI()
 		end
@@ -403,7 +403,8 @@ function LBB:OnEvent(event, ...)
 	end
 
 	if event == "UNIT_SPELLCAST_SENT" then
-		local unit, targetName, castGUID, spellID = ...
+		local rawUnit, targetName, castGUID, spellID = ...
+		local unit = self.Compat.SafeRead(rawUnit, nil)
 		if unit == "player" and self.Scanner then
 			self.Scanner:OnPlayerSpellcastSent(unit, targetName, castGUID, spellID)
 		end
@@ -411,7 +412,8 @@ function LBB:OnEvent(event, ...)
 	end
 
 	if event == "UNIT_SPELLCAST_SUCCEEDED" then
-		local unit, castGUID, spellID = ...
+		local rawUnit, castGUID, spellID = ...
+		local unit = self.Compat.SafeRead(rawUnit, nil)
 		if unit == "player" and self.Scanner and self.Scanner:OnPlayerSpellcastSucceeded(unit, castGUID, spellID) then
 			self:RefreshUI()
 		end
@@ -419,7 +421,8 @@ function LBB:OnEvent(event, ...)
 	end
 
 	if event == "UNIT_SPELLCAST_FAILED" then
-		local unit = ...
+		local rawUnit = ...
+		local unit = self.Compat.SafeRead(rawUnit, nil)
 		if unit == "player" and self.Scanner and self.Scanner:OnPlayerCastFailed() then
 			self:RefreshUI()
 		end

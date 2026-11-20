@@ -309,4 +309,89 @@ describe("Smart Anti-Stuck Buff Casting (Cross-Duty Range, LoS Rotation, Visibil
 		assert.are.equal(origName2, LBB.Assignments.rosterByUnit["raid2"].name)
 		assert.are.equal(origName3, LBB.Assignments.rosterByUnit["raid3"].name)
 	end)
+
+	it("cycles BOTH spell and target across Righteous Fury -> Blessing of Wisdom in combat and recognizes casts even with secret spellIDs", function()
+		env:SetKnownSpell(25780, "Righteous Fury", 135962)
+		env:SetKnownSpell(25894, "Greater Blessing of Wisdom", 135912)
+		LBB.Capabilities:ScanPlayer()
+		LBB.Assignments:SetRighteousFuryEnabled(true)
+		LBB.Assignments:SetAllClassBuffs("PaladinBuffer", "BOW", true)
+
+		-- Player is missing BOTH Righteous Fury AND Blessing of Wisdom across everyone (raid2, raid3, raid1)
+		env.state.units["player"].auras = {
+			{ name = "Devotion Aura", spellId = 465, duration = 0, expirationTime = 0 },
+		}
+		env.state.units["raid2"].auras = {}
+		env.state.units["raid3"].auras = {}
+		LBB.BuffStrip:Refresh()
+
+		local autoBtn = _G.LittleBuffBoyAutoBuffBtn
+		-- Enter combat lockdown!
+		env:SetCombat(true)
+
+		-- Click 1 in combat -> casts Righteous Fury on "player"
+		-- Simulate Midnight returning a SECRET spellID on UNIT_SPELLCAST_SUCCEEDED synchronously during OnClick (before PostClick)
+		-- AND readable pre-combat Devotion Aura still on player (so scanRestricted == false until server UNIT_AURA arrives!)
+		autoBtn:Click("LeftButton", true)
+		assert.are.equal("Righteous Fury", autoBtn:GetAttribute("spell1"))
+		assert.are.equal("player", autoBtn:GetAttribute("unit1"))
+		LBB:OnEvent("UNIT_SPELLCAST_SUCCEEDED", "player", "CAST-RF", Mock.MakeSecret(25780))
+		autoBtn:Click("LeftButton", false)
+		-- Righteous Fury MUST immediately be recognized as active (0 missing) instead of staying MISS!
+		assert.are.equal(0, LBB.BuffStrip.lastEvals["SELF:RIGHTEOUS_FURY"].missingCount)
+
+		-- Click 2 in combat -> MUST cycle to Blessing of Wisdom on raid2 (FarWarrior), NOT re-cast Righteous Fury!
+		env:AdvanceTime(1.5)
+		autoBtn:Click("LeftButton", true)
+		assert.are.equal("Blessing of Wisdom", autoBtn:GetAttribute("spell1"))
+		assert.are.equal("raid2", autoBtn:GetAttribute("unit1"))
+		LBB:OnEvent("UNIT_SPELLCAST_SUCCEEDED", "player", "CAST-BOW1", Mock.MakeSecret(25290))
+		autoBtn:Click("LeftButton", false)
+		assert.are.equal(2, LBB.BuffStrip.lastEvals["CLASS:BOW"].missingCount)
+
+		-- Click 3 in combat -> cycles to Blessing of Wisdom on raid1 (Healer > DPS)!
+		env:AdvanceTime(1.5)
+		autoBtn:Click("LeftButton", true)
+		assert.are.equal("Blessing of Wisdom", autoBtn:GetAttribute("spell1"))
+		assert.are.equal("raid1", autoBtn:GetAttribute("unit1"))
+		LBB:OnEvent("UNIT_SPELLCAST_SUCCEEDED", "player", "CAST-BOW2", Mock.MakeSecret(25290))
+		autoBtn:Click("LeftButton", false)
+		assert.are.equal(1, LBB.BuffStrip.lastEvals["CLASS:BOW"].missingCount)
+
+		-- Click 4 in combat -> cycles to Blessing of Wisdom on raid3 (NearMage, DPS)!
+		env:AdvanceTime(1.5)
+		-- Simulate server UNIT_AURA delivering Midnight secret auras in combat on all units
+		env.state.units["player"].auras = {
+			{ name = "Devotion Aura", spellId = 465, duration = 0, expirationTime = 0 },
+			{ name = Mock.MakeSecret("Righteous Fury"), spellId = Mock.MakeSecret(25780), duration = Mock.MakeSecret(1800), expirationTime = Mock.MakeSecret(2800) },
+		}
+		autoBtn:Click("LeftButton", true)
+		assert.are.equal("Blessing of Wisdom", autoBtn:GetAttribute("spell1"))
+		assert.are.equal("raid3", autoBtn:GetAttribute("unit1"))
+		LBB:OnEvent("UNIT_SPELLCAST_SUCCEEDED", "player", "CAST-BOW3", Mock.MakeSecret(25290))
+		autoBtn:Click("LeftButton", false)
+		assert.are.equal(0, LBB.BuffStrip.lastEvals["SELF:RIGHTEOUS_FURY"].missingCount)
+		assert.are.equal(0, LBB.BuffStrip.lastEvals["CLASS:BOW"].missingCount)
+
+		-- Right-Click in combat cycles group/greater spells across duties (Righteous Fury -> Greater Blessing of Wisdom by class)!
+		autoBtn:Click("RightButton", true)
+		autoBtn:Click("RightButton", false)
+		assert.are.equal("Righteous Fury", autoBtn:GetAttribute("spell2"))
+		assert.are.equal("player", autoBtn:GetAttribute("unit2"))
+
+		autoBtn:Click("RightButton", true)
+		autoBtn:Click("RightButton", false)
+		assert.are.equal("Greater Blessing of Wisdom", autoBtn:GetAttribute("spell2"))
+		assert.are.equal("raid2", autoBtn:GetAttribute("unit2"))
+
+		autoBtn:Click("RightButton", true)
+		autoBtn:Click("RightButton", false)
+		assert.are.equal("Greater Blessing of Wisdom", autoBtn:GetAttribute("spell2"))
+		assert.are.equal("raid1", autoBtn:GetAttribute("unit2"))
+
+		autoBtn:Click("RightButton", true)
+		autoBtn:Click("RightButton", false)
+		assert.are.equal("Greater Blessing of Wisdom", autoBtn:GetAttribute("spell2"))
+		assert.are.equal("raid3", autoBtn:GetAttribute("unit2"))
+	end)
 end)

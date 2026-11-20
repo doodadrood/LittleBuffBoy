@@ -23,12 +23,14 @@ Scanner.auraCache = {}
 Scanner.backoffTargets = {}
 Scanner.lastAttempt = nil
 Scanner.pendingCast = nil
+Scanner.pendingSecretSuccess = nil
 
 function Scanner:Reset()
 	self.auraCache = {}
 	self.backoffTargets = {}
 	self.lastAttempt = nil
 	self.pendingCast = nil
+	self.pendingSecretSuccess = nil
 end
 
 function Scanner:MarkTargetSkipped(targetKey, duration)
@@ -61,18 +63,19 @@ function Scanner:IsTargetSkipped(targetKey, now)
 	return true
 end
 
--- Record a user click / cast attempt on `(unit, targetName, dutyKey)`.
+-- Record a user click / cast attempt on `(unit, targetName, dutyKey, spellName)`.
 -- If the same target+duty is clicked again within 0.35s..3.5s out of combat and still hasn't received the buff
 -- (e.g. blocked by Line of Sight or moving), temporarily rotate to the next in-range target!
 -- Ignores sub-0.35s duplicate events (MouseDown + MouseUp on the same physical click) and never rotates during combat lockdown.
-function Scanner:RecordCastAttempt(unit, targetName, dutyKey)
+function Scanner:RecordCastAttempt(unit, targetName, dutyKey, spellName)
 	if not unit then
 		return false
 	end
 	local now = LBB.Compat.GetTime()
 	local targetKey = targetName or unit
 	local prev = self.lastAttempt
-	if prev and prev.targetKey == targetKey and prev.dutyKey == dutyKey then
+	local rotated = false
+	if prev and prev.targetKey == targetKey and prev.dutyKey == dutyKey and prev.spellName == spellName then
 		local dt = now - (prev.time or 0)
 		if dt < 0.35 then
 			-- Same physical click (MouseDown followed by MouseUp): ignore duplicate phase
@@ -80,24 +83,26 @@ function Scanner:RecordCastAttempt(unit, targetName, dutyKey)
 		end
 		if unit ~= "player" and not LBB.Compat.InCombat() and dt <= 3.5 then
 			self:MarkTargetSkipped(targetKey, self.BACKOFF_DURATION)
-			self.lastAttempt = {
-				unit = unit,
-				targetKey = targetKey,
-				dutyKey = dutyKey,
-				time = now,
-				rotated = true,
-			}
-			return true
+			rotated = true
 		end
 	end
 	self.lastAttempt = {
 		unit = unit,
 		targetKey = targetKey,
 		dutyKey = dutyKey,
+		spellName = spellName,
 		time = now,
-		rotated = false,
+		rotated = rotated,
 	}
-	return false
+	-- If UNIT_SPELLCAST_SUCCEEDED fired synchronously during OnClick (before PostClick) with a secret spellID,
+	-- apply the optimistic combat aura cache update right now using the button's exact spellName & unit!
+	if self.pendingSecretSuccess and (now - self.pendingSecretSuccess) <= 0.35 and spellName and spellName ~= "" then
+		self.pendingSecretSuccess = nil
+		if self:ApplyOptimisticCast(nil, spellName, unit, targetKey) then
+			return true
+		end
+	end
+	return rotated
 end
 
 -- Called immediately when UNIT_SPELLCAST_FAILED or a cast-blocking UI_ERROR_MESSAGE fires
@@ -250,21 +255,14 @@ function Scanner:OnPlayerSpellcastSent(unit, targetName, castGUID, spellID)
 	}
 end
 
--- Optimistically update auraCache when player finishes casting a buff/seal/totem/Judgement.
--- Critical during combat in Midnight (12.1.5 / 16001) when C_UnitAuras returns secret values!
-function Scanner:OnPlayerSpellcastSucceeded(unit, castGUID, spellID)
-	if unit ~= "player" then
-		return false
-	end
+function Scanner:ApplyOptimisticCast(sid, sName, hintUnit, hintTargetName)
 	local Compat = LBB.Compat
 	local Catalog = LBB.Catalog
 	local now = Compat.GetTime()
-	local sid = Compat.SafeRead(spellID, nil)
-	local cguid = Compat.SafeRead(castGUID, nil)
-	local sInfo = sid and Compat.GetSpellInfo(sid) or nil
-	local sName = sInfo and sInfo.name or nil
+	local optUntil = now + 2.5
+	local castInCombat = Compat.InCombat()
 
-	if not sid and not sName then
+	if not sid and (not sName or sName == "") then
 		return false
 	end
 
@@ -301,6 +299,8 @@ function Scanner:OnPlayerSpellcastSucceeded(unit, castGUID, spellID)
 				name = sName,
 				expirationTime = now + 30,
 				duration = 30,
+				optimisticUntil = optUntil,
+				castInCombat = castInCombat,
 			},
 		}
 		return true
@@ -312,6 +312,8 @@ function Scanner:OnPlayerSpellcastSucceeded(unit, castGUID, spellID)
 			name = sName or Catalog.RIGHTEOUS_FURY.name,
 			expirationTime = now + 1800,
 			duration = 1800,
+			optimisticUntil = optUntil,
+			castInCombat = castInCombat,
 		}
 		return true
 	elseif palAuraID then
@@ -337,16 +339,21 @@ function Scanner:OnPlayerSpellcastSucceeded(unit, castGUID, spellID)
 	local dur = isGroup and 1800 or ((fam and fam.class == "PALADIN") and 600 or (famID == "BATTLE_SHOUT" and 120 or 1800))
 	local exp = now + dur
 
-	-- Resolve intended target member from UNIT_SPELLCAST_SENT or last click attempt
+	-- Resolve intended target member from hint -> pendingCast -> lastAttempt -> player
 	local targetMember = nil
-	local targetUnit = nil
-	if self.pendingCast and ((cguid and self.pendingCast.castGUID == cguid) or (now - (self.pendingCast.time or 0)) <= 3.0) then
+	local targetUnit = hintUnit
+	if hintTargetName and rosterByName[hintTargetName] then
+		targetMember = rosterByName[hintTargetName]
+	elseif hintUnit and rosterByUnit[hintUnit] then
+		targetMember = rosterByUnit[hintUnit]
+	end
+	if not targetMember and self.pendingCast and (now - (self.pendingCast.time or 0)) <= 3.0 then
 		if self.pendingCast.targetName then
 			targetMember = rosterByName[self.pendingCast.targetName]
 		end
 	end
 	if not targetMember and self.lastAttempt and (now - (self.lastAttempt.time or 0)) <= 3.5 then
-		targetUnit = self.lastAttempt.unit
+		targetUnit = targetUnit or self.lastAttempt.unit
 		targetMember = (self.lastAttempt.targetKey and rosterByName[self.lastAttempt.targetKey])
 			or (targetUnit and rosterByUnit[targetUnit])
 	end
@@ -366,6 +373,8 @@ function Scanner:OnPlayerSpellcastSucceeded(unit, castGUID, spellID)
 			expirationTime = exp,
 			duration = dur,
 			source = "player",
+			optimisticUntil = optUntil,
+			castInCombat = castInCombat,
 		}
 		c.battleRezzed = false
 		if m and m.name then
@@ -405,6 +414,40 @@ function Scanner:OnPlayerSpellcastSucceeded(unit, castGUID, spellID)
 	end
 
 	return true
+end
+
+-- Optimistically update auraCache when player finishes casting a buff/seal/totem/Judgement.
+-- Critical during combat in Midnight (12.1.5 / 16001) when C_UnitAuras or spellID returns secret values!
+function Scanner:OnPlayerSpellcastSucceeded(unit, castGUID, spellID)
+	local Compat = LBB.Compat
+	if Compat.SafeRead(unit, nil) ~= "player" then
+		return false
+	end
+	local now = Compat.GetTime()
+	local sid = Compat.SafeRead(spellID, nil)
+	local cguid = Compat.SafeRead(castGUID, nil)
+	local sInfo = sid and Compat.GetSpellInfo(sid) or nil
+	local sName = sInfo and sInfo.name or nil
+
+	local hintUnit, hintTarget = nil, nil
+	if self.pendingCast and ((cguid and self.pendingCast.castGUID == cguid) or (now - (self.pendingCast.time or 0)) <= 3.0) then
+		hintTarget = self.pendingCast.targetName
+	end
+
+	-- If Midnight returned a secret spellID in combat, fall back to the spellName & unit recorded by our BuffStrip click!
+	if not sid and not sName then
+		if self.lastAttempt and self.lastAttempt.spellName and (now - (self.lastAttempt.time or 0)) <= 2.5 then
+			sName = self.lastAttempt.spellName
+			hintUnit = self.lastAttempt.unit
+			hintTarget = hintTarget or self.lastAttempt.targetKey
+		else
+			-- UNIT_SPELLCAST_SUCCEEDED fired synchronously during OnClick before PostClick ran: defer to PostClick!
+			self.pendingSecretSuccess = now
+			return false
+		end
+	end
+
+	return self:ApplyOptimisticCast(sid, sName, hintUnit, hintTarget)
 end
 
 -- Secret-safe live unit aura scanner
@@ -560,6 +603,36 @@ function Scanner:ScanUnit(unit, unitInfo)
 	end
 
 	if not scanRestricted then
+		-- During combat, preserve buffs explicitly cast by the player during this combat while unexpired
+		-- (handles Midnight secret/hidden combat-applied auras and the UNIT_SPELLCAST_SUCCEEDED -> UNIT_AURA window).
+		-- When combat ends (`not inCombat`), live C_UnitAuras reconciles everything authoritatively!
+		if inCombat then
+			local function keepInCombat(entry)
+				if not entry then
+					return false
+				end
+				if entry.optimisticUntil and now < entry.optimisticUntil then
+					return true
+				end
+				if entry.castInCombat and (entry.expirationTime == 0 or (entry.expirationTime or 0) > now) then
+					return true
+				end
+				return false
+			end
+			for famID, entry in pairs(cache.families) do
+				if not foundFamilies[famID] and keepInCombat(entry) then
+					foundFamilies[famID] = entry
+				end
+			end
+			if not foundRF and keepInCombat(cache.righteousFury) then
+				foundRF = cache.righteousFury
+			end
+			for sid, entry in pairs(cache.seals or {}) do
+				if not foundSeals[sid] and keepInCombat(entry) then
+					foundSeals[sid] = entry
+				end
+			end
+		end
 		-- Full readable scan: update cache authoritatively
 		cache.families = foundFamilies
 		cache.paladinAuras = foundAuras
@@ -1064,6 +1137,7 @@ function Scanner:EvaluateDuty(duty, roster, options)
 		combatTarget = combatTarget,
 		effectiveTarget = effectiveTarget,
 		combatUnits = combatUnits,
+		allTargets = allTargets,
 		recommendGroup = recommendGroup,
 		reagentCount = reagentCount,
 		lowReagent = lowReagent,
@@ -1160,6 +1234,7 @@ function Scanner:GetBestAutoBuffAction(duties, roster, options)
 	local bestCombatStagingEval = nil
 	local bestCombatStagingScore = -1
 	local fallbackEval = nil
+	local allEvals = {}
 
 	for _, duty in ipairs(duties or {}) do
 		local eval = self:EvaluateDuty(duty, roster, options)
@@ -1177,12 +1252,13 @@ function Scanner:GetBestAutoBuffAction(duties, roster, options)
 				bestCombatStagingEval = eval
 			end
 
+			local autoScore = 0
 			if eval.needCount > 0 then
-				local score = dutyAutoPriority(duty, eval)
-				if score > bestScore then
-					bestScore = score
+				autoScore = dutyAutoPriority(duty, eval)
+				if autoScore > bestScore then
+					bestScore = autoScore
 					bestEval = eval
-				elseif score == bestScore and bestEval then
+				elseif autoScore == bestScore and bestEval then
 					local remA = eval.shortestRemaining or 0
 					local remB = bestEval.shortestRemaining or 0
 					if remA < remB then
@@ -1191,10 +1267,10 @@ function Scanner:GetBestAutoBuffAction(duties, roster, options)
 				end
 
 				if eval.inRangeNeedCount > 0 then
-					if score > bestInRangeScore then
-						bestInRangeScore = score
+					if autoScore > bestInRangeScore then
+						bestInRangeScore = autoScore
 						bestInRangeEval = eval
-					elseif score == bestInRangeScore and bestInRangeEval then
+					elseif autoScore == bestInRangeScore and bestInRangeEval then
 						local remA = eval.shortestRemaining or 0
 						local remB = bestInRangeEval.shortestRemaining or 0
 						if remA < remB then
@@ -1203,8 +1279,140 @@ function Scanner:GetBestAutoBuffAction(duties, roster, options)
 					end
 				end
 			end
+
+			table_insert(allEvals, {
+				duty = duty,
+				eval = eval,
+				autoScore = autoScore,
+				stageScore = stageScore,
+			})
 		end
 	end
+
+	-- Sort all duties by in-combat priority so LittleBuffBoyAutoBuffBtn can cycle through ALL buffs & targets in combat!
+	table_sort(allEvals, function(a, b)
+		local aNeed = (a.eval.inRangeNeedCount or 0) > 0
+		local bNeed = (b.eval.inRangeNeedCount or 0) > 0
+		if aNeed ~= bNeed then
+			return aNeed and (not bNeed)
+		end
+		if a.autoScore ~= b.autoScore then
+			return a.autoScore > b.autoScore
+		end
+		if a.stageScore ~= b.stageScore then
+			return a.stageScore > b.stageScore
+		end
+		return (a.eval.shortestRemaining or 9999) < (b.eval.shortestRemaining or 9999)
+	end)
+
+	local function isSelfOnlyDuty(duty)
+		local k = duty.kind
+		return k == "PALADIN_AURA" or k == "SHAMAN_TOTEM" or k == "RIGHTEOUS_FURY" or k == "PALADIN_SEAL" or duty.familyID == "BATTLE_SHOUT"
+	end
+
+	-- Build two-pass multi-duty Left-Click combat_queue (`spell|unit|selfFlag;...`):
+	-- Pass 1: Every currently missing/expiring buff+target across ALL duties (so Click 1 = Righteous Fury, Click 2 = Wisdom on party1, Click 3 = Wisdom on party2, etc.)
+	-- Pass 2: Remaining healthy duties+targets (so even if you enter combat healthy and buffs drop later, cycling still covers everyone!)
+	local queueEntries = {}
+	local seenQueue = {}
+	local function addQueueEntry(spellName, unitToken, selfFlag)
+		if not spellName or spellName == "" or not unitToken or unitToken == "" then
+			return
+		end
+		-- Sanitize delimiters
+		local cleanSpell = spellName:gsub("[|;]", "")
+		local key = cleanSpell .. "|" .. unitToken
+		if not seenQueue[key] then
+			seenQueue[key] = true
+			table_insert(queueEntries, cleanSpell .. "|" .. unitToken .. "|" .. (selfFlag and "1" or "0"))
+		end
+	end
+
+	for pass = 1, 2 do
+		for _, item in ipairs(allEvals) do
+			local duty = item.duty
+			local eval = item.eval
+			local skipActiveAura = (duty.kind == "PALADIN_AURA" and eval.missingCount == 0 and #allEvals > 1)
+			if not skipActiveAura and eval.singleSpellName and eval.singleSpellName ~= "" then
+				if isSelfOnlyDuty(duty) then
+					local needsNow = (eval.needCount or 0) > 0
+					if (pass == 1 and needsNow) or (pass == 2 and not needsNow) then
+						addQueueEntry(eval.singleSpellName, "player", true)
+					end
+				else
+					for _, t in ipairs(eval.allTargets or {}) do
+						local needsNow = t.needsCast and (t.inRange ~= false)
+						if (pass == 1 and needsNow) or (pass == 2 and not needsNow) then
+							addQueueEntry(eval.singleSpellName, t.unit, false)
+						end
+					end
+				end
+			end
+		end
+	end
+	local combatQueue = table.concat(queueEntries, ";")
+
+	-- Build multi-duty Right-Click combat_group_queue (`spell|u1,u2,...|selfFlag;...`):
+	-- One click per self-buff / per class (for Greater Blessings) / per subgroup (for Prayers/Gifts/Brilliance)!
+	local groupEntries = {}
+	local seenGroup = {}
+	local function addGroupEntry(spellName, unitListStr, selfFlag)
+		if not spellName or spellName == "" or not unitListStr or unitListStr == "" then
+			return
+		end
+		local cleanSpell = spellName:gsub("[|;]", "")
+		local key = cleanSpell .. "|" .. unitListStr
+		if not seenGroup[key] then
+			seenGroup[key] = true
+			table_insert(groupEntries, cleanSpell .. "|" .. unitListStr .. "|" .. (selfFlag and "1" or "0"))
+		end
+	end
+
+	for _, item in ipairs(allEvals) do
+		local duty = item.duty
+		local eval = item.eval
+		local skipActiveAura = (duty.kind == "PALADIN_AURA" and eval.missingCount == 0 and #allEvals > 1)
+		if not skipActiveAura then
+			if isSelfOnlyDuty(duty) then
+				addGroupEntry(eval.singleSpellName, "player", true)
+			elseif eval.hasGroup and eval.groupSpellName and eval.groupSpellName ~= "" then
+				if duty.kind == "CLASS_BUFF" then
+					local byClsOrder = {}
+					local byClsUnits = {}
+					for _, t in ipairs(eval.allTargets or {}) do
+						local cls = (t.member and t.member.class) or "OTHER"
+						if not byClsUnits[cls] then
+							byClsUnits[cls] = {}
+							table_insert(byClsOrder, cls)
+						end
+						table_insert(byClsUnits[cls], t.unit)
+					end
+					for _, cls in ipairs(byClsOrder) do
+						addGroupEntry(eval.groupSpellName, table.concat(byClsUnits[cls], ","), false)
+					end
+				elseif duty.kind == "GROUP_BUFF" then
+					local bySubOrder = {}
+					local bySubUnits = {}
+					for _, t in ipairs(eval.allTargets or {}) do
+						local sg = (t.member and t.member.subgroup) or 1
+						if not bySubUnits[sg] then
+							bySubUnits[sg] = {}
+							table_insert(bySubOrder, sg)
+						end
+						table_insert(bySubUnits[sg], t.unit)
+					end
+					for _, sg in ipairs(bySubOrder) do
+						addGroupEntry(eval.groupSpellName, table.concat(bySubUnits[sg], ","), false)
+					end
+				else
+					addGroupEntry(eval.groupSpellName, eval.combatUnits or eval.groupAnchorUnit or "player", false)
+				end
+			else
+				addGroupEntry(eval.singleSpellName, eval.combatUnits or eval.groupAnchorUnit or "player", false)
+			end
+		end
+	end
+	local combatGroupQueue = table.concat(groupEntries, ";")
 
 	-- Prefer an actionable in-range duty first; if all in-range duties are currently healthy (even if an OOR player is missing),
 	-- pre-stage the button to `bestCombatStagingEval` (the in-range duty whose buff will expire FIRST during combat!).
@@ -1214,8 +1422,7 @@ function Scanner:GetBestAutoBuffAction(duties, roster, options)
 	local combatUnits = "player"
 	local targetName = nil
 	if chosen then
-		local k = chosen.duty.kind
-		if k ~= "PALADIN_AURA" and k ~= "SHAMAN_TOTEM" and k ~= "RIGHTEOUS_FURY" and k ~= "PALADIN_SEAL" and chosen.duty.familyID ~= "BATTLE_SHOUT" then
+		if not isSelfOnlyDuty(chosen.duty) then
 			local et = chosen.effectiveTarget or chosen.nextTarget or chosen.combatTarget
 			targetUnit = (et and et.unit) or "player"
 			groupUnit = chosen.groupAnchorUnit or targetUnit
@@ -1237,6 +1444,8 @@ function Scanner:GetBestAutoBuffAction(duties, roster, options)
 		unit = targetUnit,
 		groupUnit = groupUnit,
 		combatUnits = combatUnits,
+		combatQueue = combatQueue,
+		combatGroupQueue = combatGroupQueue,
 		targetName = targetName,
 		singleSpell = chosen and chosen.singleSpellName or "",
 		groupSpell = chosen and ((chosen.hasGroup and chosen.groupSpellName) or chosen.singleSpellName) or "",

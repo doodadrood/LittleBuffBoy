@@ -30,9 +30,9 @@ local HEADER_W = 24
 local PAD = 4
 
 -- Blizzard Restricted Environment OnClick pre-script:
--- Allows SecureActionButtonTemplate to rotate across eligible alive party/raid members (and @mouseover)
+-- Allows SecureActionButtonTemplate to cycle across ALL buffs & alive party/raid targets (and @mouseover)
 -- DURING combat lockdown (where normal Lua SetAttribute is blocked)!
--- Strictly zero table constructors (`{}`), zero `function` definitions, and RestrictedEnvironment globals only.
+-- Strictly zero table constructors, zero `function` definitions, and RestrictedEnvironment globals only.
 local COMBAT_CLICK_PRE_SNIPPET = [[
 	if down then
 		self:SetAttribute("combat_had_down", true)
@@ -44,8 +44,241 @@ local COMBAT_CLICK_PRE_SNIPPET = [[
 	end
 	if not PlayerInCombat() then
 		self:SetAttribute("combat_idx", 0)
+		self:SetAttribute("combat_group_idx", 0)
 		return
 	end
+
+	-- Branch A: Multi-duty combat queue (LittleBuffBoyAutoBuffBtn: cycles BOTH spell AND unit across all duties!)
+	if button == "RightButton" then
+		local gq = self:GetAttribute("combat_group_queue")
+		if gq and gq ~= "" then
+			local mo = SecureCmdOptionParse("[@mouseover,help,nodead] mouseover")
+			local count = 0
+			local len = strlen(gq)
+			local pos = 1
+			while pos <= len do
+				local semi = strfind(gq, ";", pos, true)
+				local entry
+				if semi then
+					entry = strsub(gq, pos, semi - 1)
+					pos = semi + 1
+				else
+					entry = strsub(gq, pos)
+					pos = len + 1
+				end
+				local p1 = strfind(entry, "|", 1, true)
+				if p1 then
+					local p2 = strfind(entry, "|", p1 + 1, true)
+					local sp = strsub(entry, 1, p1 - 1)
+					local ulist = p2 and strsub(entry, p1 + 1, p2 - 1) or strsub(entry, p1 + 1)
+					local sflag = p2 and strsub(entry, p2 + 1) or "0"
+					if sp ~= "" and ulist ~= "" then
+						local validUnit = nil
+						if sflag == "1" or ulist == "player" then
+							validUnit = "player"
+						else
+							local upos = 1
+							local ulen = strlen(ulist)
+							while upos <= ulen do
+								local cm = strfind(ulist, ",", upos, true)
+								local u
+								if cm then
+									u = strsub(ulist, upos, cm - 1)
+									upos = cm + 1
+								else
+									u = strsub(ulist, upos)
+									upos = ulen + 1
+								end
+								if u ~= "" then
+									local parsed = (u == "player") and "player" or SecureCmdOptionParse("[@" .. u .. ",help,nodead] " .. u)
+									if parsed and parsed ~= "" then
+										validUnit = u
+										break
+									end
+								end
+							end
+						end
+						if validUnit then
+							count = count + 1
+						end
+					end
+				end
+			end
+			if count > 0 then
+				local idx = (self:GetAttribute("combat_group_idx") or 0) + 1
+				if idx > count then
+					idx = 1
+				end
+				local seen = 0
+				pos = 1
+				while pos <= len do
+					local semi = strfind(gq, ";", pos, true)
+					local entry
+					if semi then
+						entry = strsub(gq, pos, semi - 1)
+						pos = semi + 1
+					else
+						entry = strsub(gq, pos)
+						pos = len + 1
+					end
+					local p1 = strfind(entry, "|", 1, true)
+					if p1 then
+						local p2 = strfind(entry, "|", p1 + 1, true)
+						local sp = strsub(entry, 1, p1 - 1)
+						local ulist = p2 and strsub(entry, p1 + 1, p2 - 1) or strsub(entry, p1 + 1)
+						local sflag = p2 and strsub(entry, p2 + 1) or "0"
+						if sp ~= "" and ulist ~= "" then
+							local validUnit = nil
+							if sflag == "1" or ulist == "player" then
+								validUnit = "player"
+							else
+								local upos = 1
+								local ulen = strlen(ulist)
+								while upos <= ulen do
+									local cm = strfind(ulist, ",", upos, true)
+									local u
+									if cm then
+										u = strsub(ulist, upos, cm - 1)
+										upos = cm + 1
+									else
+										u = strsub(ulist, upos)
+										upos = ulen + 1
+									end
+									if u ~= "" then
+										local parsed = (u == "player") and "player" or SecureCmdOptionParse("[@" .. u .. ",help,nodead] " .. u)
+										if parsed and parsed ~= "" then
+											validUnit = u
+											break
+										end
+									end
+								end
+							end
+							if validUnit then
+								seen = seen + 1
+								if seen == idx then
+									if sflag ~= "1" and mo and mo ~= "" then
+										validUnit = mo
+									end
+									self:SetAttribute("combat_group_idx", idx)
+									self:SetAttribute("spell2", sp)
+									self:SetAttribute("unit2", validUnit)
+									return
+								end
+							end
+						end
+					end
+				end
+			end
+			return
+		end
+	else
+		local cq = self:GetAttribute("combat_queue")
+		if cq and cq ~= "" then
+			local len = strlen(cq)
+			local mo = SecureCmdOptionParse("[@mouseover,help,nodead] mouseover")
+			if mo and mo ~= "" then
+				-- Hovering a friendly alive unit frame: cast the first targeted buff in the queue on @mouseover!
+				local pos = 1
+				while pos <= len do
+					local semi = strfind(cq, ";", pos, true)
+					local entry
+					if semi then
+						entry = strsub(cq, pos, semi - 1)
+						pos = semi + 1
+					else
+						entry = strsub(cq, pos)
+						pos = len + 1
+					end
+					local p1 = strfind(entry, "|", 1, true)
+					if p1 then
+						local p2 = strfind(entry, "|", p1 + 1, true)
+						local sp = strsub(entry, 1, p1 - 1)
+						local sflag = p2 and strsub(entry, p2 + 1) or "0"
+						if sp ~= "" and sflag ~= "1" then
+							self:SetAttribute("spell1", sp)
+							self:SetAttribute("unit1", mo)
+							return
+						end
+					end
+				end
+			end
+			local count = 0
+			local pos = 1
+			while pos <= len do
+				local semi = strfind(cq, ";", pos, true)
+				local entry
+				if semi then
+					entry = strsub(cq, pos, semi - 1)
+					pos = semi + 1
+				else
+					entry = strsub(cq, pos)
+					pos = len + 1
+				end
+				local p1 = strfind(entry, "|", 1, true)
+				if p1 then
+					local p2 = strfind(entry, "|", p1 + 1, true)
+					local sp = strsub(entry, 1, p1 - 1)
+					local u = p2 and strsub(entry, p1 + 1, p2 - 1) or strsub(entry, p1 + 1)
+					local sflag = p2 and strsub(entry, p2 + 1) or "0"
+					if sp ~= "" and u ~= "" then
+						local okUnit = (sflag == "1" or u == "player")
+						if not okUnit then
+							local parsed = SecureCmdOptionParse("[@" .. u .. ",help,nodead] " .. u)
+							okUnit = (parsed and parsed ~= "")
+						end
+						if okUnit then
+							count = count + 1
+						end
+					end
+				end
+			end
+			if count > 0 then
+				local idx = (self:GetAttribute("combat_idx") or 0) + 1
+				if idx > count then
+					idx = 1
+				end
+				local seen = 0
+				pos = 1
+				while pos <= len do
+					local semi = strfind(cq, ";", pos, true)
+					local entry
+					if semi then
+						entry = strsub(cq, pos, semi - 1)
+						pos = semi + 1
+					else
+						entry = strsub(cq, pos)
+						pos = len + 1
+					end
+					local p1 = strfind(entry, "|", 1, true)
+					if p1 then
+						local p2 = strfind(entry, "|", p1 + 1, true)
+						local sp = strsub(entry, 1, p1 - 1)
+						local u = p2 and strsub(entry, p1 + 1, p2 - 1) or strsub(entry, p1 + 1)
+						local sflag = p2 and strsub(entry, p2 + 1) or "0"
+						if sp ~= "" and u ~= "" then
+							local okUnit = (sflag == "1" or u == "player")
+							if not okUnit then
+								local parsed = SecureCmdOptionParse("[@" .. u .. ",help,nodead] " .. u)
+								okUnit = (parsed and parsed ~= "")
+							end
+							if okUnit then
+								seen = seen + 1
+								if seen == idx then
+									self:SetAttribute("combat_idx", idx)
+									self:SetAttribute("spell1", sp)
+									self:SetAttribute("unit1", u)
+									return
+								end
+							end
+						end
+					end
+				end
+			end
+			return
+		end
+	end
+
+	-- Branch B: Single-duty tile unit rotation (`combat_units`)
 	local list = self:GetAttribute("combat_units")
 	if not list or list == "" then
 		return
@@ -79,7 +312,7 @@ local COMBAT_CLICK_PRE_SNIPPET = [[
 			pos = len + 1
 		end
 		if u ~= "" then
-			local parsed = SecureCmdOptionParse("[@" .. u .. ",help,nodead] " .. u)
+			local parsed = (u == "player") and "player" or SecureCmdOptionParse("[@" .. u .. ",help,nodead] " .. u)
 			if parsed and parsed ~= "" then
 				count = count + 1
 				if not firstValid then
@@ -111,7 +344,7 @@ local COMBAT_CLICK_PRE_SNIPPET = [[
 				pos = len + 1
 			end
 			if u ~= "" then
-				local parsed = SecureCmdOptionParse("[@" .. u .. ",help,nodead] " .. u)
+				local parsed = (u == "player") and "player" or SecureCmdOptionParse("[@" .. u .. ",help,nodead] " .. u)
 				if parsed and parsed ~= "" then
 					seen = seen + 1
 					if seen == idx then
@@ -296,14 +529,16 @@ local function createTile(parent, index)
 			_G.GameTooltip:Hide()
 		end
 	end)
-	btn:SetScript("PostClick", function(selfBtn)
+	btn:SetScript("PostClick", function(selfBtn, button)
 		local eval = selfBtn._eval
 		local et = eval and (eval.effectiveTarget or eval.nextTarget)
 		if eval and et and eval.duty and LBB.Scanner then
-			local actualUnit = (selfBtn.GetAttribute and selfBtn:GetAttribute("unit1")) or et.unit
+			local isRight = (button == "RightButton")
+			local actualUnit = (selfBtn.GetAttribute and selfBtn:GetAttribute(isRight and "unit2" or "unit1")) or et.unit
+			local actualSpell = (selfBtn.GetAttribute and selfBtn:GetAttribute(isRight and "spell2" or "spell1")) or (isRight and eval.groupSpellName or eval.singleSpellName)
 			local member = LBB.Assignments and LBB.Assignments.rosterByUnit and LBB.Assignments.rosterByUnit[actualUnit]
 			local actualName = (member and member.name) or (actualUnit == et.unit and et.name) or actualUnit
-			local rotated = LBB.Scanner:RecordCastAttempt(actualUnit, actualName, eval.duty.key)
+			local rotated = LBB.Scanner:RecordCastAttempt(actualUnit, actualName, eval.duty.key, actualSpell)
 			if rotated then
 				BuffStrip:Refresh()
 			end
@@ -402,13 +637,15 @@ function BuffStrip:Init()
 		self:ApplyHealthyVisibility()
 		if _G.GameTooltip then _G.GameTooltip:Hide() end
 	end)
-	autoTile:SetScript("PostClick", function(selfBtn)
+	autoTile:SetScript("PostClick", function(selfBtn, button)
 		local act = self.lastAutoAction
 		if act and act.nextDuty and LBB.Scanner then
-			local actualUnit = (selfBtn and selfBtn.GetAttribute and selfBtn:GetAttribute("unit1")) or act.unit
+			local isRight = (button == "RightButton")
+			local actualUnit = (selfBtn and selfBtn.GetAttribute and selfBtn:GetAttribute(isRight and "unit2" or "unit1")) or act.unit
+			local actualSpell = (selfBtn and selfBtn.GetAttribute and selfBtn:GetAttribute(isRight and "spell2" or "spell1")) or (isRight and act.groupSpell or act.singleSpell)
 			local member = LBB.Assignments and LBB.Assignments.rosterByUnit and LBB.Assignments.rosterByUnit[actualUnit]
 			local actualName = (member and member.name) or (actualUnit == act.unit and act.targetName) or actualUnit
-			local rotated = LBB.Scanner:RecordCastAttempt(actualUnit, actualName, act.nextDuty.key)
+			local rotated = LBB.Scanner:RecordCastAttempt(actualUnit, actualName, act.nextDuty.key, actualSpell)
 			if rotated then
 				self:Refresh()
 			end
@@ -590,7 +827,10 @@ function BuffStrip:Refresh()
 			Compat.SetSecureAttribute(self.autoTile, "unit2", autoAction.groupUnit or autoAction.unit or "player")
 			Compat.SetSecureAttribute(self.autoTile, "spell2", autoAction.groupSpell or "")
 			Compat.SetSecureAttribute(self.autoTile, "combat_units", autoAction.combatUnits or autoAction.unit or "player")
+			Compat.SetSecureAttribute(self.autoTile, "combat_queue", autoAction.combatQueue or "")
+			Compat.SetSecureAttribute(self.autoTile, "combat_group_queue", autoAction.combatGroupQueue or "")
 			Compat.SetSecureAttribute(self.autoTile, "combat_idx", 0)
+			Compat.SetSecureAttribute(self.autoTile, "combat_group_idx", 0)
 
 			Compat.RunOutOfCombat("strip_auto_layout", function()
 				self.autoTile:ClearAllPoints()
