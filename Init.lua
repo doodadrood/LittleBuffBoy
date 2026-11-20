@@ -402,6 +402,21 @@ function LBB:OnEvent(event, ...)
 		return
 	end
 
+	if event == "UNIT_SPELLCAST_FAILED" then
+		local unit = ...
+		if unit == "player" and self.Scanner and self.Scanner:OnPlayerCastFailed() then
+			self:RefreshUI()
+		end
+		return
+	end
+
+	if event == "UI_ERROR_MESSAGE" then
+		if self.Scanner and self.Scanner:OnPlayerCastFailed() then
+			self:RefreshUI()
+		end
+		return
+	end
+
 	if event == "BAG_UPDATE_DELAYED" then
 		self.Capabilities:ScanPlayer()
 		self:RefreshUI()
@@ -458,6 +473,8 @@ function LBB:Bootstrap()
 		"PLAYER_LOGIN",
 		"PLAYER_ENTERING_WORLD",
 		"UNIT_AURA",
+		"UNIT_SPELLCAST_FAILED",
+		"UI_ERROR_MESSAGE",
 		"GROUP_ROSTER_UPDATE",
 		"PLAYER_ROLES_ASSIGNED",
 		"READY_CHECK",

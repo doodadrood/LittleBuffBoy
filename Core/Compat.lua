@@ -130,23 +130,94 @@ function Compat.IsSpellKnown(spellID, isPet)
 	return known and true or false
 end
 
-function Compat.IsSpellInRange(spell, unit)
-	if not isValidSpellArg(spell) or type(unit) ~= "string" then
+function Compat.UnitInRange(unit)
+	if type(unit) ~= "string" then
 		return nil
 	end
-	if not (_G.C_Spell and _G.C_Spell.IsSpellInRange) then
-		return nil
-	end
-	local ok, res = pcall(_G.C_Spell.IsSpellInRange, spell, unit)
-	if not ok or Compat.IsSecret(res) then
-		return nil
-	end
-	if res == true or res == 1 then
+	if unit == "player" then
 		return true
-	elseif res == false or res == 0 then
-		return false
+	end
+	if _G.UnitInRange then
+		local ok, inRange, checkedRange = pcall(_G.UnitInRange, unit)
+		if ok and not Compat.IsSecret(inRange) and not Compat.IsSecret(checkedRange) then
+			if checkedRange == true or type(inRange) == "boolean" then
+				if checkedRange ~= false then
+					return inRange and true or false
+				end
+			end
+		end
 	end
 	return nil
+end
+
+function Compat.UnitInPhase(unit)
+	if type(unit) ~= "string" or unit == "player" then
+		return true
+	end
+	if _G.UnitInPhase then
+		return Compat.SafeCall(_G.UnitInPhase, true, unit) and true or false
+	end
+	if _G.UnitPhaseReason then
+		local reason = Compat.SafeCall(_G.UnitPhaseReason, nil, unit)
+		return reason == nil
+	end
+	return true
+end
+
+function Compat.IsUnitBuffable(unit)
+	if type(unit) ~= "string" or not Compat.UnitExists(unit) then
+		return false
+	end
+	if not Compat.UnitIsConnected(unit) or Compat.UnitIsDeadOrGhost(unit) then
+		return false
+	end
+	if _G.UnitIsCharmed and Compat.SafeCall(_G.UnitIsCharmed, false, unit) then
+		return false
+	end
+	if _G.UnitCanAttack and Compat.SafeCall(_G.UnitCanAttack, false, "player", unit) then
+		return false
+	end
+	if _G.UnitIsFriend and not Compat.SafeCall(_G.UnitIsFriend, true, "player", unit) then
+		return false
+	end
+	return true
+end
+
+function Compat.IsSpellInRange(spell, unit, fallbackSpellID)
+	if type(unit) ~= "string" then
+		return nil
+	end
+	if unit == "player" then
+		return true
+	end
+	-- Units outside client visibility (>100 yds / different zone) or in a different phase are out of range
+	if not Compat.UnitIsVisible(unit) or not Compat.UnitInPhase(unit) then
+		return false
+	end
+	if _G.C_Spell and _G.C_Spell.IsSpellInRange then
+		if isValidSpellArg(spell) then
+			local ok, res = pcall(_G.C_Spell.IsSpellInRange, spell, unit)
+			if ok and not Compat.IsSecret(res) then
+				if res == true or res == 1 then
+					return true
+				elseif res == false or res == 0 then
+					return false
+				end
+			end
+		end
+		if isValidSpellArg(fallbackSpellID) and fallbackSpellID ~= spell then
+			local ok, res = pcall(_G.C_Spell.IsSpellInRange, fallbackSpellID, unit)
+			if ok and not Compat.IsSecret(res) then
+				if res == true or res == 1 then
+					return true
+				elseif res == false or res == 0 then
+					return false
+				end
+			end
+		end
+	end
+	-- Fallback to Blizzard's 40-yard group/raid range check when spell range returns nil
+	return Compat.UnitInRange(unit)
 end
 
 function Compat.GetSpellCooldown(spell)

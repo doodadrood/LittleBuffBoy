@@ -142,7 +142,9 @@ local function createTile(parent, index)
 		_G.GameTooltip:AddDoubleLine("Coverage:", string.format("%d / %d buffed (%d missing)",
 			eval.buffedCount, eval.totalEligible, eval.missingCount), 0.7, 0.75, 0.82, 1, 1, 1)
 		if eval.nextTarget then
-			_G.GameTooltip:AddDoubleLine("Next target:", eval.nextTarget.name, 0.7, 0.75, 0.82, 0.2, 0.9, 0.5)
+			local rangeTag = (eval.nextTarget.inRange == false) and " (Out of Range)" or ""
+			local tColor = (eval.nextTarget.inRange == false) and { 0.98, 0.72, 0.18 } or { 0.2, 0.9, 0.5 }
+			_G.GameTooltip:AddDoubleLine("Next target:", eval.nextTarget.name .. rangeTag, 0.7, 0.75, 0.82, tColor[1], tColor[2], tColor[3])
 		end
 		if eval.reagentCount ~= nil then
 			local rColor = eval.lowReagent and { 0.98, 0.35, 0.3 } or { 0.8, 0.85, 0.9 }
@@ -169,6 +171,15 @@ local function createTile(parent, index)
 	btn:SetScript("OnLeave", function()
 		if _G.GameTooltip then
 			_G.GameTooltip:Hide()
+		end
+	end)
+	btn:SetScript("PostClick", function(selfBtn)
+		local eval = selfBtn._eval
+		if eval and eval.nextTarget and eval.duty and LBB.Scanner then
+			local rotated = LBB.Scanner:RecordCastAttempt(eval.nextTarget.unit, eval.nextTarget.name, eval.duty.key)
+			if rotated then
+				BuffStrip:Refresh()
+			end
 		end
 	end)
 
@@ -262,6 +273,15 @@ function BuffStrip:Init()
 		self.isHovered = false
 		self:ApplyHealthyVisibility()
 		if _G.GameTooltip then _G.GameTooltip:Hide() end
+	end)
+	autoTile:SetScript("PostClick", function()
+		local act = self.lastAutoAction
+		if act and act.hasAction and act.nextDuty and LBB.Scanner then
+			local rotated = LBB.Scanner:RecordCastAttempt(act.unit, act.targetName, act.nextDuty.key)
+			if rotated then
+				self:Refresh()
+			end
+		end
 	end)
 	autoTile:Hide()
 	self.autoTile = autoTile
@@ -405,7 +425,14 @@ function BuffStrip:Refresh()
 				self.autoTile._icon:SetTexture(autoAction.icon)
 			end
 			self.autoTile._icon:SetDesaturated(autoAction.allHealthy)
-			if autoAction.totalMissing > 0 then
+			if autoAction.allOutOfRange then
+				local needTotal = (autoAction.totalMissing or 0) + (autoAction.totalExpiring or 0)
+				self.autoTile._badge:SetText(tostring(needTotal))
+				self.autoTile._badge:SetTextColor(Theme.Colors.warn[1], Theme.Colors.warn[2], Theme.Colors.warn[3], 1)
+				self.autoTile._statusBar:SetColorTexture(Theme.Colors.warn[1], Theme.Colors.warn[2], Theme.Colors.warn[3], 1)
+				Theme.SetBorderColor(self.autoTile, Theme.Colors.border)
+				self.autoTile._timer:SetText("OOR")
+			elseif autoAction.totalMissing > 0 then
 				self.autoTile._badge:SetText(tostring(autoAction.totalMissing))
 				self.autoTile._badge:SetTextColor(Theme.Colors.danger[1], Theme.Colors.danger[2], Theme.Colors.danger[3], 1)
 				self.autoTile._statusBar:SetColorTexture(Theme.Colors.danger[1], Theme.Colors.danger[2], Theme.Colors.danger[3], 1)
@@ -428,7 +455,7 @@ function BuffStrip:Refresh()
 			Compat.SetSecureAttribute(self.autoTile, "unit1", autoAction.unit or "player")
 			Compat.SetSecureAttribute(self.autoTile, "spell1", autoAction.singleSpell or "")
 			Compat.SetSecureAttribute(self.autoTile, "type2", "spell")
-			Compat.SetSecureAttribute(self.autoTile, "unit2", autoAction.unit or "player")
+			Compat.SetSecureAttribute(self.autoTile, "unit2", autoAction.groupUnit or autoAction.unit or "player")
 			Compat.SetSecureAttribute(self.autoTile, "spell2", autoAction.groupSpell or "")
 
 			Compat.RunOutOfCombat("strip_auto_layout", function()
@@ -480,7 +507,12 @@ function BuffStrip:Refresh()
 				tile._timer:SetText(Theme.FormatTimer(eval.shortestRemaining))
 			end
 		else
-			if eval.missingCount > 0 then
+			if eval.allOutOfRange then
+				statusColor = Theme.Colors.warn
+				tile._badge:SetText(tostring(eval.needCount))
+				tile._badge:SetTextColor(Theme.Colors.warn[1], Theme.Colors.warn[2], Theme.Colors.warn[3], 1)
+				tile._timer:SetText("OOR")
+			elseif eval.missingCount > 0 then
 				statusColor = Theme.Colors.danger
 				tile._badge:SetText(tostring(eval.missingCount))
 				tile._badge:SetTextColor(Theme.Colors.danger[1], Theme.Colors.danger[2], Theme.Colors.danger[3], 1)
@@ -529,6 +561,7 @@ function BuffStrip:Refresh()
 
 		-- SecureActionButton attributes (ALWAYS routed through Combat Lockdown Queue!)
 		local targetUnit = (eval.nextTarget and eval.nextTarget.unit) or "player"
+		local groupUnit = eval.groupAnchorUnit or targetUnit
 		local singleSpell = eval.singleSpellName or ""
 		local groupSpell = (eval.hasGroup and eval.groupSpellName) or singleSpell
 
@@ -542,7 +575,7 @@ function BuffStrip:Refresh()
 			Compat.SetSecureAttribute(tile, "unit2", "player")
 		else
 			Compat.SetSecureAttribute(tile, "unit1", targetUnit)
-			Compat.SetSecureAttribute(tile, "unit2", targetUnit)
+			Compat.SetSecureAttribute(tile, "unit2", groupUnit)
 		end
 
 		-- Layout updates must also wait until out of combat for secure buttons

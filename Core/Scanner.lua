@@ -15,13 +15,93 @@ local table_sort = table.sort
 
 Scanner.MAX_AURAS = 40
 Scanner.DEFAULT_REFRESH_THRESHOLD = 180 -- 3 minutes
+Scanner.BACKOFF_DURATION = 6 -- seconds to temporarily deprioritize a failed/LoS target so buffing never gets stuck
 
 -- Pre-combat cached aura state per unitKey (guid or unit token)
 -- auraCache[unitKey] = { families = { [famID] = { expirationTime, duration, spellId, source } }, consumables = { ... }, wasDead = bool }
 Scanner.auraCache = {}
+Scanner.backoffTargets = {}
+Scanner.lastAttempt = nil
 
 function Scanner:Reset()
 	self.auraCache = {}
+	self.backoffTargets = {}
+	self.lastAttempt = nil
+end
+
+function Scanner:MarkTargetSkipped(targetKey, duration)
+	if not targetKey then
+		return
+	end
+	local now = LBB.Compat.GetTime()
+	self.backoffTargets[targetKey] = now + (duration or self.BACKOFF_DURATION)
+end
+
+function Scanner:ClearTargetSkipped(targetKey)
+	if targetKey then
+		self.backoffTargets[targetKey] = nil
+	end
+end
+
+function Scanner:IsTargetSkipped(targetKey, now)
+	if not targetKey then
+		return false
+	end
+	local untilTime = self.backoffTargets[targetKey]
+	if not untilTime then
+		return false
+	end
+	now = now or LBB.Compat.GetTime()
+	if now >= untilTime then
+		self.backoffTargets[targetKey] = nil
+		return false
+	end
+	return true
+end
+
+-- Record a user click / cast attempt on `(unit, targetName, dutyKey)`.
+-- If the same target+duty is clicked again within 3.5s and still hasn't received the buff
+-- (e.g. blocked by Line of Sight or moving), temporarily rotate to the next in-range target!
+function Scanner:RecordCastAttempt(unit, targetName, dutyKey)
+	if not unit or unit == "player" then
+		return false
+	end
+	local now = LBB.Compat.GetTime()
+	local targetKey = targetName or unit
+	local prev = self.lastAttempt
+	if prev and prev.targetKey == targetKey and prev.dutyKey == dutyKey and (now - prev.time) <= 3.5 then
+		self:MarkTargetSkipped(targetKey, self.BACKOFF_DURATION)
+		self.lastAttempt = {
+			unit = unit,
+			targetKey = targetKey,
+			dutyKey = dutyKey,
+			time = now,
+			rotated = true,
+		}
+		return true
+	end
+	self.lastAttempt = {
+		unit = unit,
+		targetKey = targetKey,
+		dutyKey = dutyKey,
+		time = now,
+		rotated = false,
+	}
+	return false
+end
+
+-- Called immediately when UNIT_SPELLCAST_FAILED or a cast-blocking UI_ERROR_MESSAGE fires
+function Scanner:OnPlayerCastFailed()
+	local prev = self.lastAttempt
+	if not prev or not prev.targetKey or prev.unit == "player" then
+		return false
+	end
+	local now = LBB.Compat.GetTime()
+	if (now - prev.time) <= 2.5 then
+		self:MarkTargetSkipped(prev.targetKey, self.BACKOFF_DURATION)
+		return true
+	end
+	return false
 end
 
 local function unitCacheKey(unit, unitInfo)
@@ -160,6 +240,7 @@ function Scanner:ScanUnit(unit, unitInfo)
 	local foundTotems = {}
 	local foundConsumables = {}
 	local scanRestricted = false
+	local spiritOfRedemption = false
 
 	for i = 1, self.MAX_AURAS do
 		local aura, blocked = Compat.GetAuraDataByIndex(unit, i, "HELPFUL")
@@ -173,6 +254,10 @@ function Scanner:ScanUnit(unit, unitInfo)
 		if aura.isCompletelyHidden then
 			scanRestricted = true
 		else
+			-- Holy Priest Spirit of Redemption (27827): cannot be buffed while in angel form
+			if aura.spellId == 27827 or aura.name == "Spirit of Redemption" then
+				spiritOfRedemption = true
+			end
 			local famID, palAuraID, totemID, isRF, sealID = matchTotemOrAura(aura)
 			local exp = aura.expirationTime
 			local dur = aura.duration
@@ -269,6 +354,7 @@ function Scanner:ScanUnit(unit, unitInfo)
 			consumables = foundConsumables,
 			restricted = false,
 			battleRezzed = cache.battleRezzed,
+			unbuffable = spiritOfRedemption,
 		}
 	end
 
@@ -444,24 +530,27 @@ function Scanner:EvaluateDuty(duty, roster, options)
 	local refreshThreshold = (options and options.refreshThreshold) or (LBB.DB and LBB.DB.refreshThreshold) or self.DEFAULT_REFRESH_THRESHOLD
 
 	local playerVec = LBB.Capabilities:GetPlayerVector()
-	local singleSpellName, groupSpellName, hasGroup, icon, groupThreshold, nativeSpellIDs
+	local singleSpellName, singleSpellID, groupSpellName, groupSpellID, hasGroup, icon, groupThreshold, nativeSpellIDs
 	local fam = duty.familyID and Catalog.GetFamily(duty.familyID) or nil
 
 	if duty.kind == "PALADIN_AURA" then
 		local def = Catalog.PALADIN_AURAS[duty.auraID]
 		local known = playerVec and playerVec.auras and playerVec.auras[duty.auraID]
 		singleSpellName = (known and known.name) or (def and def.name)
+		singleSpellID = (known and known.spellID) or (def and def.ranks and def.ranks[1])
 		icon = (known and known.icon) or (def and def.icon)
 	elseif duty.kind == "RIGHTEOUS_FURY" then
 		local def = Catalog.RIGHTEOUS_FURY
 		local known = playerVec and playerVec.righteousFury
 		singleSpellName = (known and known.name) or duty.spellName or def.name
+		singleSpellID = (known and known.spellID) or duty.spellID or def.spellID
 		icon = (known and known.icon) or duty.icon or def.icon
 		nativeSpellIDs = (known and known.allSpellIDs) or { [def.spellID] = true }
 	elseif duty.kind == "PALADIN_SEAL" then
 		local known = playerVec and playerVec.seals and duty.sealID and playerVec.seals[duty.sealID]
 		local def = duty.sealID and Catalog.SEAL_BY_ID[duty.sealID]
 		singleSpellName = (known and known.name) or duty.spellName or (def and def.name)
+		singleSpellID = (known and known.spellID) or duty.spellID or (def and def.ranks and def.ranks[1])
 		icon = (known and known.icon) or duty.icon or (def and def.icon) or 132325
 		nativeSpellIDs = (known and known.allSpellIDs) or duty.allSpellIDs or (duty.spellID and { [duty.spellID] = true }) or {}
 		-- Seals last 30s; warn only under 6s instead of 180s
@@ -470,11 +559,14 @@ function Scanner:EvaluateDuty(duty, roster, options)
 		local def = Catalog.TOTEM_BY_ID[duty.totemID]
 		local known = playerVec and playerVec.totems and playerVec.totems[duty.element] and playerVec.totems[duty.element][duty.totemID]
 		singleSpellName = (known and known.name) or (def and def.name)
+		singleSpellID = (known and known.spellID) or (def and def.ranks and def.ranks[1])
 		icon = (known and known.icon) or (def and def.icon)
 	elseif fam then
 		local known = playerVec and playerVec.buffs and playerVec.buffs[duty.familyID]
 		singleSpellName = (known and known.bestSingleName) or fam.name
+		singleSpellID = (known and known.bestSingleID) or (fam.singleRanks and fam.singleRanks[1] and fam.singleRanks[1].spellID)
 		groupSpellName = (known and known.hasGroup and known.bestGroupName) or nil
+		groupSpellID = (known and known.hasGroup and known.bestGroupID) or nil
 		hasGroup = known and known.hasGroup or false
 		icon = (known and known.icon) or fam.icon
 		groupThreshold = (options and options.groupThreshold) or (LBB.DB and LBB.DB.groupThreshold) or fam.groupThreshold or 2
@@ -486,91 +578,113 @@ function Scanner:EvaluateDuty(duty, roster, options)
 	local missingCount = 0
 	local expiringCount = 0
 	local inRangeMissingCount = 0
+	local inRangeExpiringCount = 0
+	local inRangeNeedCount = 0
 	local shortestRemaining = math_huge
 	local candidates = {}
+	local anyInRangeUnit = nil
 
 	for _, m in ipairs(targets) do
 		local unit = m.unit
 		if unit and Compat.UnitExists(unit) and Compat.UnitIsDeadOrGhost(unit) then
 			self:ScanUnit(unit, m)
-		elseif unit and m.online and m.alive and Compat.UnitExists(unit) then
-			totalEligible = totalEligible + 1
+		elseif unit and m.online and m.alive and Compat.IsUnitBuffable(unit) then
 			local scan = self:ScanUnit(unit, m)
+			if not scan.unbuffable then
+				totalEligible = totalEligible + 1
 
-			local present = false
-			local remaining = 0
-			if duty.kind == "PALADIN_AURA" then
-				present = scan.paladinAuras[duty.auraID] == true
-				remaining = present and 3600 or 0
-			elseif duty.kind == "RIGHTEOUS_FURY" then
-				local rf = scan.righteousFury
-				if rf and rf.present then
-					present = true
-					remaining = self:GetRemainingSeconds(rf, now)
-				end
-			elseif duty.kind == "PALADIN_SEAL" then
-				local s = duty.sealID and scan.seals and scan.seals[duty.sealID]
-				if s and s.present then
-					present = true
-					remaining = self:GetRemainingSeconds(s, now)
-				end
-			elseif duty.kind == "SHAMAN_TOTEM" then
-				present = scan.totems[duty.totemID] == true
-				remaining = present and 120 or 0
-			else
-				local a = scan.families[duty.familyID]
-				if a and a.present then
-					present = true
-					remaining = self:GetRemainingSeconds(a, now)
-				end
-			end
-
-			if present then
-				if remaining < shortestRemaining then
-					shortestRemaining = remaining
-				end
-			else
-				shortestRemaining = 0
-			end
-
-			local needsCast = (not present) or (remaining < refreshThreshold)
-			if not present then
-				missingCount = missingCount + 1
-			elseif remaining < refreshThreshold then
-				expiringCount = expiringCount + 1
-			else
-				buffedCount = buffedCount + 1
-			end
-
-			if needsCast then
 				local inRange
-				if unit == "player" then
+				if unit == "player" or duty.kind == "PALADIN_AURA" or duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL" or duty.kind == "SHAMAN_TOTEM" or duty.familyID == "BATTLE_SHOUT" then
 					inRange = true
-				elseif singleSpellName then
-					inRange = Compat.IsSpellInRange(singleSpellName, unit)
+				else
+					inRange = Compat.IsSpellInRange(singleSpellName, unit, singleSpellID)
 				end
-				if inRange == true then
-					inRangeMissingCount = inRangeMissingCount + 1
+				if inRange ~= false and not anyInRangeUnit then
+					anyInRangeUnit = unit
 				end
-				table_insert(candidates, {
-					member = m,
-					unit = unit,
-					name = m.name,
-					present = present,
-					remaining = remaining,
-					inRange = inRange,
-					rolePriority = roleWeight(m.role),
-				})
+
+				local present = false
+				local remaining = 0
+				if duty.kind == "PALADIN_AURA" then
+					present = scan.paladinAuras[duty.auraID] == true
+					remaining = present and 3600 or 0
+				elseif duty.kind == "RIGHTEOUS_FURY" then
+					local rf = scan.righteousFury
+					if rf and rf.present then
+						present = true
+						remaining = self:GetRemainingSeconds(rf, now)
+					end
+				elseif duty.kind == "PALADIN_SEAL" then
+					local s = duty.sealID and scan.seals and scan.seals[duty.sealID]
+					if s and s.present then
+						present = true
+						remaining = self:GetRemainingSeconds(s, now)
+					end
+				elseif duty.kind == "SHAMAN_TOTEM" then
+					present = scan.totems[duty.totemID] == true
+					remaining = present and 120 or 0
+				else
+					local a = scan.families[duty.familyID]
+					if a and a.present then
+						present = true
+						remaining = self:GetRemainingSeconds(a, now)
+					end
+				end
+
+				if present then
+					if remaining < shortestRemaining then
+						shortestRemaining = remaining
+					end
+				else
+					shortestRemaining = 0
+				end
+
+				local needsCast = (not present) or (remaining < refreshThreshold)
+				local tKey = m.name or unit
+				if not needsCast then
+					buffedCount = buffedCount + 1
+					-- Buff landed: clear any temporary LoS/cast-failure backoff for this target
+					self:ClearTargetSkipped(tKey)
+				else
+					if not present then
+						missingCount = missingCount + 1
+						if inRange ~= false then
+							inRangeMissingCount = inRangeMissingCount + 1
+						end
+					else
+						expiringCount = expiringCount + 1
+						if inRange ~= false then
+							inRangeExpiringCount = inRangeExpiringCount + 1
+						end
+					end
+					if inRange ~= false then
+						inRangeNeedCount = inRangeNeedCount + 1
+					end
+
+					table_insert(candidates, {
+						member = m,
+						unit = unit,
+						name = m.name,
+						targetKey = tKey,
+						present = present,
+						remaining = remaining,
+						inRange = inRange,
+						backedOff = self:IsTargetSkipped(tKey, now),
+						rolePriority = roleWeight(m.role),
+					})
+				end
 			end
 		end
 	end
 
 	-- Deterministic priority ordering for next cast target:
-	-- 1. In-range (true > nil > false)
-	-- 2. Completely missing before expiring
-	-- 3. Higher role priority (Tank > Healer > DPS)
-	-- 4. Shorter remaining time
-	-- 5. Alphabetical name
+	-- 1. In-range (true [2] > nil/unknown [1] > false/out-of-range [0])
+	--    -> An IN-RANGE player ALWAYS beats an OUT-OF-RANGE player so you never get stuck!
+	-- 2. Not in temporary LoS / failed-cast backoff (rotates past pillar-blocked targets automatically!)
+	-- 3. Completely missing before expiring
+	-- 4. Higher role priority (Tank > Healer > DPS)
+	-- 5. Shorter remaining time
+	-- 6. Alphabetical name
 	local function rangeScore(r)
 		if r == true then
 			return 2
@@ -584,6 +698,9 @@ function Scanner:EvaluateDuty(duty, roster, options)
 		local ar, br = rangeScore(a.inRange), rangeScore(b.inRange)
 		if ar ~= br then
 			return ar > br
+		end
+		if a.backedOff ~= b.backedOff then
+			return (not a.backedOff) and b.backedOff
 		end
 		if a.present ~= b.present then
 			return (not a.present) and b.present
@@ -599,7 +716,9 @@ function Scanner:EvaluateDuty(duty, roster, options)
 
 	local nextTarget = candidates[1] or nil
 	local needCount = missingCount + expiringCount
-	local recommendGroup = (hasGroup and groupSpellName ~= nil and needCount >= (groupThreshold or 2))
+	local allOutOfRange = (needCount > 0 and inRangeNeedCount == 0)
+	local groupAnchorUnit = (nextTarget and nextTarget.inRange ~= false and nextTarget.unit) or anyInRangeUnit or (nextTarget and nextTarget.unit) or "player"
+	local recommendGroup = (hasGroup and groupSpellName ~= nil and inRangeNeedCount >= (groupThreshold or 2))
 
 	local reagentCount = nil
 	local lowReagent = false
@@ -617,7 +736,10 @@ function Scanner:EvaluateDuty(duty, roster, options)
 		duty = duty,
 		icon = icon,
 		singleSpellName = singleSpellName,
+		singleSpellID = singleSpellID,
 		groupSpellName = groupSpellName,
+		groupSpellID = groupSpellID,
+		groupAnchorUnit = groupAnchorUnit,
 		hasGroup = hasGroup,
 		nativeSpellIDs = nativeSpellIDs,
 		hasClassOverride = duty.hasClassOverride and true or false,
@@ -627,6 +749,9 @@ function Scanner:EvaluateDuty(duty, roster, options)
 		expiringCount = expiringCount,
 		needCount = needCount,
 		inRangeMissingCount = inRangeMissingCount,
+		inRangeExpiringCount = inRangeExpiringCount,
+		inRangeNeedCount = inRangeNeedCount,
+		allOutOfRange = allOutOfRange,
 		shortestRemaining = shortestRemaining,
 		nextTarget = nextTarget,
 		recommendGroup = recommendGroup,
@@ -636,31 +761,62 @@ function Scanner:EvaluateDuty(duty, roster, options)
 	}
 end
 
+-- Cross-duty priority scoring for Smart Auto-Buff:
+-- Strictly prioritizes IN-RANGE actionable duties across all classes/groups BEFORE any out-of-range duty,
+-- and deprioritizes temporarily backed-off (LoS/failed) targets so pressing Auto-Buff never gets stuck!
 local function dutyAutoPriority(duty, eval)
-	if eval.missingCount > 0 then
+	local nt = eval.nextTarget
+	if not nt or eval.needCount == 0 then
+		return 0
+	end
+
+	-- 1. Self / party-foundation buffs (always on "player", always in range)
+	if not nt.present then
 		if duty.kind == "PALADIN_AURA" or duty.kind == "RIGHTEOUS_FURY" then
-			return 100
+			return 110
 		elseif duty.kind == "SHAMAN_TOTEM" or duty.familyID == "BATTLE_SHOUT" then
-			return 90
+			return 100
 		elseif duty.kind == "PALADIN_SEAL" then
-			return 85
-		elseif eval.nextTarget and eval.nextTarget.inRange == true then
-			return 70 + (eval.nextTarget.rolePriority or 1)
-		elseif eval.nextTarget and eval.nextTarget.inRange == nil then
-			return 60 + (eval.nextTarget.rolePriority or 1)
-		else
-			return 40 + (eval.nextTarget and eval.nextTarget.rolePriority or 1)
-		end
-	elseif eval.expiringCount > 0 then
-		if duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL" then
-			return 35
-		elseif eval.nextTarget and eval.nextTarget.inRange ~= false then
-			return 25 + (eval.nextTarget.rolePriority or 1)
-		else
-			return 10
+			return 95
 		end
 	end
-	return 0
+
+	local roleBonus = nt.rolePriority or 1
+	-- Slight bonus (+2) for class-wide duties without single-only override so Greater Blessings cast before single overrides
+	local scopeBonus = (duty.kind == "CLASS_BUFF" and #(duty.classes or {}) > 0) and 2 or 0
+
+	-- 2. In-range & NOT backed-off targets (Missing > Expiring, both ahead of ANY out-of-range duty!)
+	if nt.inRange == true and not nt.backedOff then
+		if not nt.present then
+			return 80 + roleBonus + scopeBonus
+		else
+			return 55 + roleBonus + scopeBonus
+		end
+	end
+
+	-- 3. Unknown range (visible, e.g. combat secret range) & NOT backed-off
+	if nt.inRange == nil and not nt.backedOff then
+		if not nt.present then
+			return 68 + roleBonus + scopeBonus
+		else
+			return 45 + roleBonus + scopeBonus
+		end
+	end
+
+	-- 4. In-range targets that were temporarily backed-off (retry once all other in-range duties are done)
+	if nt.inRange ~= false and nt.backedOff then
+		if not nt.present then
+			return 35 + roleBonus
+		else
+			return 25 + roleBonus
+		end
+	end
+
+	-- 5. Out-of-range targets (ONLY selected when zero in-range duties need casting anywhere!)
+	if not nt.present then
+		return 15 + roleBonus
+	end
+	return 5 + roleBonus
 end
 
 -- Pick the single highest-priority next action across ALL of a player's active duties
@@ -668,6 +824,7 @@ end
 function Scanner:GetBestAutoBuffAction(duties, roster, options)
 	local totalMissing = 0
 	local totalExpiring = 0
+	local totalInRangeNeed = 0
 	local bestEval = nil
 	local bestScore = 0
 	local fallbackEval = nil
@@ -680,6 +837,7 @@ function Scanner:GetBestAutoBuffAction(duties, roster, options)
 			end
 			totalMissing = totalMissing + (eval.missingCount or 0)
 			totalExpiring = totalExpiring + (eval.expiringCount or 0)
+			totalInRangeNeed = totalInRangeNeed + (eval.inRangeNeedCount or 0)
 			if eval.needCount > 0 then
 				local score = dutyAutoPriority(duty, eval)
 				if score > bestScore then
@@ -698,21 +856,30 @@ function Scanner:GetBestAutoBuffAction(duties, roster, options)
 
 	local chosen = bestEval or fallbackEval
 	local targetUnit = "player"
+	local groupUnit = "player"
+	local targetName = nil
 	if chosen then
 		local k = chosen.duty.kind
 		if k ~= "PALADIN_AURA" and k ~= "SHAMAN_TOTEM" and k ~= "RIGHTEOUS_FURY" and k ~= "PALADIN_SEAL" and chosen.duty.familyID ~= "BATTLE_SHOUT" then
 			targetUnit = (chosen.nextTarget and chosen.nextTarget.unit) or "player"
+			groupUnit = chosen.groupAnchorUnit or targetUnit
+			targetName = chosen.nextTarget and chosen.nextTarget.name or nil
 		end
 	end
 
+	local totalNeed = totalMissing + totalExpiring
 	return {
 		hasAction = bestEval ~= nil,
-		allHealthy = (totalMissing == 0 and totalExpiring == 0),
+		allHealthy = (totalNeed == 0),
+		allOutOfRange = (totalNeed > 0 and totalInRangeNeed == 0),
 		totalMissing = totalMissing,
 		totalExpiring = totalExpiring,
+		totalInRangeNeed = totalInRangeNeed,
 		nextDuty = chosen and chosen.duty or nil,
 		nextEval = chosen,
 		unit = targetUnit,
+		groupUnit = groupUnit,
+		targetName = targetName,
 		singleSpell = chosen and chosen.singleSpellName or "",
 		groupSpell = chosen and ((chosen.hasGroup and chosen.groupSpellName) or chosen.singleSpellName) or "",
 		icon = chosen and chosen.icon or "Interface\\AddOns\\LittleBuffBoy\\Media\\MinimapIcon",

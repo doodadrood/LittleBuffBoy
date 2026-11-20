@@ -156,6 +156,10 @@ function Mock.New()
 			online = (info.online ~= false),
 			dead = info.dead and true or false,
 			visible = (info.visible ~= false),
+			inPhase = (info.inPhase ~= false),
+			charmed = info.charmed and true or false,
+			hostile = info.hostile and true or false,
+			unitInRange = info.unitInRange,
 			inCombat = info.inCombat and true or false,
 			isLeader = info.isLeader and true or false,
 			isAssist = info.isAssist and true or false,
@@ -331,6 +335,9 @@ function Mock.New()
 			IsSpellInRange = function(spell, unit)
 				local uMap = state.spellInRange[unit]
 				if uMap and uMap[spell] ~= nil then
+					if uMap[spell] == "NIL" then
+						return nil
+					end
 					return uMap[spell]
 				end
 				return true
@@ -543,6 +550,17 @@ function Mock.New()
 		_G.UnitIsDeadOrGhost = function(u) return state.units[u] and state.units[u].dead or false end
 		_G.UnitIsConnected = function(u) return state.units[u] and state.units[u].online or false end
 		_G.UnitIsVisible = function(u) return state.units[u] and state.units[u].visible or false end
+		_G.UnitInPhase = function(u) return state.units[u] == nil or state.units[u].inPhase ~= false end
+		_G.UnitIsCharmed = function(u) return state.units[u] and state.units[u].charmed or false end
+		_G.UnitCanAttack = function(_, u) return state.units[u] and state.units[u].hostile or false end
+		_G.UnitIsFriend = function(_, u) return state.units[u] == nil or (not state.units[u].hostile) end
+		_G.UnitInRange = function(u)
+			local info = state.units[u]
+			if info and info.unitInRange ~= nil then
+				return info.unitInRange, true
+			end
+			return true, true
+		end
 		_G.UnitAffectingCombat = function(u) return state.units[u] and state.units[u].inCombat or false end
 		_G.UnitGroupRolesAssigned = function(u) return state.units[u] and state.units[u].role or "NONE" end
 		_G.UnitIsGroupLeader = function(u) return state.units[u] and state.units[u].isLeader or false end
