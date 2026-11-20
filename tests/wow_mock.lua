@@ -266,6 +266,11 @@ function Mock.New()
 			SetHighlightTexture = function() end,
 			SetPushedTexture = function() end,
 			GetName = function(self) return self._name end,
+			GetParent = function(self) return self._parent end,
+			SetParent = function(self, p) self._parent = p end,
+			GetCenter = function() return 100, 100 end,
+			GetEffectiveScale = function() return 1 end,
+			SetMask = function(self, m) self._mask = m end,
 			IsForbidden = function() return false end,
 			CreateTexture = function(self)
 				return env:CreateMockFrame("Texture", nil, self)
@@ -291,8 +296,11 @@ function Mock.New()
 		_G.GetNumTalents = nil
 		_G.GetTalentInfo = nil
 		_G.LittleBuffBoy = nil
-		_G.LittleBuffBoyDB = nil
-		_G.LittleBuffBoyCharDB = nil
+		if not state.preserveSavedVars then
+			_G.LittleBuffBoyDB = nil
+			_G.LittleBuffBoyCharDB = nil
+		end
+		_G.LibStub = nil
 
 		_G.issecretvalue = Mock.IsSecret
 		_G.GetTime = function() return state.time end
@@ -564,6 +572,8 @@ function Mock.New()
 		end
 
 		_G.UIParent = env:CreateMockFrame("Frame", "UIParent", nil)
+		_G.Minimap = env:CreateMockFrame("Frame", "Minimap", _G.UIParent)
+		_G.Minimap:SetSize(140, 140)
 		_G.GameTooltip = {
 			SetOwner = function() end,
 			ClearLines = function() end,
@@ -644,6 +654,7 @@ function Mock.New()
 			"UI/MatrixFrame.lua",
 			"UI/RaidIndicators.lua",
 			"UI/ReminderPill.lua",
+			"UI/MinimapButton.lua",
 			"UI/Options.lua",
 			"Init.lua",
 		}

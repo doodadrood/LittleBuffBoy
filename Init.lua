@@ -14,12 +14,18 @@ local DEFAULTS = {
 	locked = false,
 	stripOrientation = "HORIZONTAL",
 	stripScale = 1.0,
+	stripHealthyMode = "SHOW", -- "SHOW" | "FADE" | "HIDE"
+	showAutoBuffTile = true,
 	refreshThreshold = 180, -- 3 minutes
 	groupThreshold = 2,
 	showRaidIndicators = true,
 	autoNegotiate = true,
 	autoRememberTracking = true,
 	freeAssign = false,
+	minimap = {
+		hide = false,
+		minimapPos = 220,
+	},
 }
 
 function LBB:Print(msg)
@@ -35,7 +41,15 @@ function LBB:InitDB()
 	_G.LittleBuffBoyDB = _G.LittleBuffBoyDB or {}
 	for k, v in pairs(DEFAULTS) do
 		if _G.LittleBuffBoyDB[k] == nil then
-			_G.LittleBuffBoyDB[k] = v
+			if type(v) == "table" then
+				local copy = {}
+				for tk, tv in pairs(v) do
+					copy[tk] = tv
+				end
+				_G.LittleBuffBoyDB[k] = copy
+			else
+				_G.LittleBuffBoyDB[k] = v
+			end
 		end
 	end
 	_G.LittleBuffBoyCharDB = _G.LittleBuffBoyCharDB or {}
@@ -58,9 +72,10 @@ function LBB:RefreshUI()
 	end
 end
 
-function LBB:RunNegotiator(broadcastReneg)
+function LBB:RunNegotiator(broadcastReneg, opts)
+	opts = opts or {}
 	self.Assignments:RefreshRosterFromGame()
-	self.Capabilities:ScanPlayer()
+	local playerVec = self.Capabilities:ScanPlayer()
 
 	-- Prune departed peers cleanly
 	local activeNames = {}
@@ -72,12 +87,41 @@ function LBB:RunNegotiator(broadcastReneg)
 	self.Capabilities:RemoveMissingPeers(activeNames)
 
 	local ppYield = self.Comms:IsPallyPowerLoaded()
+	local caps = self.Capabilities:GetAllVectors()
+	local newRaidSig = self.Assignments:ComputeMultiCasterRaidSignature(
+		self.Assignments.roster,
+		caps,
+		playerVec and playerVec.class,
+		opts.forceInRaid
+	)
+
+	local preserveExisting = false
+	if opts.forceFresh then
+		-- Explicit user action (Auto-Assign / Reset Locks): re-solve unlocked slots fresh
+		preserveExisting = false
+		if newRaidSig then
+			self.Assignments.lastMultiCasterRaidSig = newRaidSig
+		end
+	elseif newRaidSig and newRaidSig ~= self.Assignments.lastMultiCasterRaidSig then
+		-- Joined a NEW multi-caster raid: unlock stale solo/old-raid locks for our class & negotiate fresh
+		self.Assignments:UnlockForFreshRaid(playerVec and playerVec.name, playerVec and playerVec.class, ppYield)
+		self.Assignments.lastMultiCasterRaidSig = newRaidSig
+		preserveExisting = false
+	elseif self.Assignments.restoredFromDB then
+		-- Solo, 5-man party, sole caster of class, or relog/reload in the SAME raid: preserve saved setup!
+		preserveExisting = true
+	end
+
 	self.Negotiator.Solve(
 		self.Assignments.roster,
-		self.Capabilities:GetAllVectors(),
+		caps,
 		self.Assignments,
-		{ pallyPowerYield = ppYield }
+		{
+			pallyPowerYield = ppYield,
+			preserveExisting = preserveExisting,
+		}
 	)
+	self.Assignments:SaveToCharDB()
 
 	if broadcastReneg then
 		self.Comms:BroadcastRenegotiate()
@@ -88,10 +132,25 @@ function LBB:RunNegotiator(broadcastReneg)
 	self:RefreshUI()
 end
 
+function LBB:LoadPreset(name)
+	local ppYield = self.Comms:IsPallyPowerLoaded()
+	if not self.Assignments:LoadPreset(name, ppYield) then
+		self:Print("Preset not found: " .. tostring(name))
+		return false
+	end
+	if not ppYield then
+		self.Comms:SendPLPWRSelf()
+	end
+	self:RefreshUI()
+	self:Print("Loaded preset '" .. tostring(name) .. "'.")
+	return true
+end
+
 function LBB:ResetAssignments()
 	local ppYield = self.Comms:IsPallyPowerLoaded()
 	self.Assignments:ClearAll(false, ppYield)
-	self:RunNegotiator(true)
+	self.Assignments.restoredFromDB = false
+	self:RunNegotiator(true, { forceFresh = true })
 	self:Print("Manual assignment locks cleared and re-negotiated.")
 end
 
@@ -149,7 +208,11 @@ function LBB:PrintStatus()
 end
 
 function LBB:HandleSlashCommand(rawMsg)
-	local cmd = string_lower(string_trim(rawMsg))
+	local trimmed = string_trim(rawMsg)
+	local cmd, rest = trimmed:match("^(%S+)%s*(.-)$")
+	cmd = string_lower(cmd or "")
+	rest = string_trim(rest or "")
+
 	if cmd == "" or cmd == "ui" or cmd == "matrix" then
 		if self.MatrixFrame then
 			self.MatrixFrame:Toggle()
@@ -157,7 +220,7 @@ function LBB:HandleSlashCommand(rawMsg)
 	elseif cmd == "lock" then
 		self:ToggleLock()
 	elseif cmd == "auto" then
-		self:RunNegotiator(true)
+		self:RunNegotiator(true, { forceFresh = true })
 		self:Print("Auto-negotiated buff assignments.")
 	elseif cmd == "reset" then
 		self:ResetAssignments()
@@ -173,6 +236,40 @@ function LBB:HandleSlashCommand(rawMsg)
 		end
 	elseif cmd == "sync" then
 		self:SyncGroup()
+	elseif cmd == "scale" then
+		local val = tonumber(rest)
+		if val and val >= 0.7 and val <= 1.4 then
+			self.DB.stripScale = math.floor((val * 10) + 0.5) / 10
+			self:RefreshUI()
+			self:Print(string.format("Buff Strip scale set to %.1fx.", self.DB.stripScale))
+		else
+			self:Print("Usage: /lbb scale <0.7 - 1.4>  (current: " .. string.format("%.1fx", self.DB.stripScale or 1.0) .. ")")
+		end
+	elseif cmd == "minimap" then
+		if self.MinimapButton then
+			local nextShow = not self.MinimapButton:IsShown()
+			self.MinimapButton:SetShown(nextShow)
+			self:Print("Minimap icon: " .. (nextShow and "ON" or "OFF"))
+		end
+	elseif cmd == "preset" then
+		local sub, pName = rest:match("^(%S+)%s*(.-)$")
+		sub = string_lower(sub or "")
+		pName = string_trim(pName or "")
+		if sub == "save" and pName ~= "" then
+			self.Assignments:SavePreset(pName)
+			self:Print("Saved preset '" .. pName .. "'.")
+		elseif sub == "load" and pName ~= "" then
+			self:LoadPreset(pName)
+		elseif (sub == "delete" or sub == "del" or sub == "rm") and pName ~= "" then
+			if self.Assignments:DeletePreset(pName) then
+				self:Print("Deleted preset '" .. pName .. "'.")
+			else
+				self:Print("Preset not found: " .. pName)
+			end
+		else
+			local list = self.Assignments:ListPresets()
+			self:Print("Presets: " .. (#list > 0 and table.concat(list, ", ") or "none") .. "  |  Usage: /lbb preset <save|load|delete> <name>")
+		end
 	elseif cmd == "rf" then
 		local cfg = self.Assignments:GetPaladinSelfConfig()
 		self.Assignments:SetRighteousFuryEnabled(not cfg.trackRF)
@@ -202,7 +299,7 @@ function LBB:HandleSlashCommand(rawMsg)
 			self:RefreshUI()
 		end
 	else
-		self:Print("Commands: /lbb [ui | lock | auto | reset | status | nudge | sync | rf | seal | options]")
+		self:Print("Commands: /lbb [ui | lock | auto | reset | preset | scale | minimap | status | nudge | sync | rf | seal | options]")
 	end
 end
 
@@ -212,6 +309,8 @@ function LBB:OnEvent(event, ...)
 		if loadedName == "LittleBuffBoy" then
 			self:InitDB()
 			self.Comms:Init()
+			-- Restore character's saved buffs/auras/overrides/totems BEFORE negotiation runs
+			self.Assignments:LoadFromCharDB(self.Comms:IsPallyPowerLoaded())
 			self.Comms:OnChange(function(reason)
 				if reason == "CAP" or reason == "RENEG" or reason == "PLPWR_SELF" then
 					if self.DB.autoNegotiate ~= false then
@@ -231,7 +330,18 @@ function LBB:OnEvent(event, ...)
 		return
 	end
 
+	if event == "PLAYER_LOGIN" then
+		-- Register minimap button at PLAYER_LOGIN so LibDBIcon-1.0 / OneForAll have already loaded
+		if self.MinimapButton then
+			self.MinimapButton:Init()
+		end
+		return
+	end
+
 	if event == "PLAYER_ENTERING_WORLD" then
+		if self.MinimapButton then
+			self.MinimapButton:Init()
+		end
 		self.Assignments:RefreshRosterFromGame()
 		self.Capabilities:ScanPlayer()
 		self.Tracking:Refresh({ clearDismiss = true })
@@ -345,6 +455,7 @@ function LBB:Bootstrap()
 	-- Register ONLY WoW: Forever safe events (NEVER COMBAT_LOG_EVENT_UNFILTERED!)
 	local events = {
 		"ADDON_LOADED",
+		"PLAYER_LOGIN",
 		"PLAYER_ENTERING_WORLD",
 		"UNIT_AURA",
 		"GROUP_ROSTER_UPDATE",

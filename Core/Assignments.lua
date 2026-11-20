@@ -7,8 +7,21 @@ LBB.Assignments = Assignments
 
 local pairs = pairs
 local ipairs = ipairs
+local type = type
 local table_insert = table.insert
 local table_sort = table.sort
+local table_concat = table.concat
+
+local function deepCopy(val)
+	if type(val) ~= "table" then
+		return val
+	end
+	local out = {}
+	for k, v in pairs(val) do
+		out[k] = deepCopy(v)
+	end
+	return out
+end
 
 function Assignments:Reset()
 	self.roster = {}
@@ -27,9 +40,207 @@ function Assignments:Reset()
 	self.paladinAuras = {}
 	-- shamanTotems[subgroup][casterName] = { EARTH = id, FIRE = id, WATER = id, AIR = id, locked = { ... } }
 	self.shamanTotems = {}
+
+	self.lastMultiCasterRaidSig = nil
+	self.restoredFromDB = false
 end
 
 Assignments:Reset()
+
+function Assignments:SnapshotState()
+	return {
+		groupBuffs = deepCopy(self.groupBuffs),
+		classBuffs = deepCopy(self.classBuffs),
+		targetBuffs = deepCopy(self.targetBuffs),
+		paladinNormalOverrides = deepCopy(self.paladinNormalOverrides),
+		paladinAuras = deepCopy(self.paladinAuras),
+		shamanTotems = deepCopy(self.shamanTotems),
+		lastMultiCasterRaidSig = self.lastMultiCasterRaidSig,
+	}
+end
+
+function Assignments:ApplySnapshot(snap, skipPaladins)
+	if type(snap) ~= "table" then
+		return false
+	end
+	self.groupBuffs = deepCopy(snap.groupBuffs or {})
+	self.targetBuffs = deepCopy(snap.targetBuffs or {})
+	self.shamanTotems = deepCopy(snap.shamanTotems or {})
+	if not skipPaladins then
+		self.classBuffs = deepCopy(snap.classBuffs or {})
+		self.paladinNormalOverrides = deepCopy(snap.paladinNormalOverrides or {})
+		self.paladinAuras = deepCopy(snap.paladinAuras or {})
+	end
+	if snap.lastMultiCasterRaidSig ~= nil then
+		self.lastMultiCasterRaidSig = snap.lastMultiCasterRaidSig
+	end
+	return true
+end
+
+function Assignments:SaveToCharDB()
+	if not LBB.CharDB then
+		LBB.CharDB = {}
+	end
+	LBB.CharDB.savedAssignments = self:SnapshotState()
+	return LBB.CharDB.savedAssignments
+end
+
+function Assignments:LoadFromCharDB(skipPaladins)
+	if not (LBB.CharDB and type(LBB.CharDB.savedAssignments) == "table") then
+		return false
+	end
+	self:ApplySnapshot(LBB.CharDB.savedAssignments, skipPaladins)
+	self.restoredFromDB = true
+	return true
+end
+
+-- Compute deterministic multi-caster raid signature for the local player's class.
+-- Returns nil when solo, in a 5-man party, or sole synced caster of their class in the raid.
+function Assignments:ComputeMultiCasterRaidSignature(roster, capabilitiesByCaster, playerClass, forceInRaid)
+	local inRaid = forceInRaid
+	if inRaid == nil then
+		inRaid = _G.IsInRaid and LBB.Compat.SafeCall(_G.IsInRaid, false) or false
+	end
+	if not inRaid or not playerClass then
+		return nil
+	end
+	local casters = {}
+	local seen = {}
+	for _, m in ipairs(roster or {}) do
+		if m.class == playerClass and m.name and not seen[m.name] then
+			if not capabilitiesByCaster or capabilitiesByCaster[m.name] then
+				seen[m.name] = true
+				table_insert(casters, m.name)
+			end
+		end
+	end
+	if #casters < 2 then
+		return nil
+	end
+	table_sort(casters)
+	return "RAID:" .. playerClass .. ":" .. table_concat(casters, ",")
+end
+
+-- Named Presets (Solo, Dungeon, Raid, or custom names) persisted per character
+function Assignments:GetPresetsTable()
+	if not LBB.CharDB then
+		LBB.CharDB = {}
+	end
+	if type(LBB.CharDB.presets) ~= "table" then
+		LBB.CharDB.presets = {}
+	end
+	return LBB.CharDB.presets
+end
+
+function Assignments:SavePreset(name)
+	if type(name) ~= "string" then
+		return false
+	end
+	name = name:match("^%s*(.-)%s*$")
+	if name == "" then
+		return false
+	end
+	local presets = self:GetPresetsTable()
+	presets[name] = {
+		name = name,
+		assignments = self:SnapshotState(),
+		paladinSelf = deepCopy(self:GetPaladinSelfConfig()),
+		savedAt = LBB.Compat.GetTime(),
+	}
+	LBB.CharDB.activePresetName = name
+	self:SaveToCharDB()
+	return true
+end
+
+function Assignments:LoadPreset(name, skipPaladins)
+	local presets = self:GetPresetsTable()
+	local preset = presets[name]
+	if not preset then
+		return false
+	end
+	self:ApplySnapshot(preset.assignments, skipPaladins)
+	if preset.paladinSelf and not skipPaladins then
+		local cfg = self:GetPaladinSelfConfig()
+		cfg.trackRF = preset.paladinSelf.trackRF and true or false
+		cfg.trackSeal = preset.paladinSelf.trackSeal and true or false
+		cfg.sealID = preset.paladinSelf.sealID
+		cfg.sealName = preset.paladinSelf.sealName
+		cfg.tankPrompted = true
+	end
+	LBB.CharDB.activePresetName = name
+	self:SaveToCharDB()
+	return true
+end
+
+function Assignments:DeletePreset(name)
+	local presets = self:GetPresetsTable()
+	if not presets[name] then
+		return false
+	end
+	presets[name] = nil
+	if LBB.CharDB and LBB.CharDB.activePresetName == name then
+		LBB.CharDB.activePresetName = nil
+	end
+	return true
+end
+
+function Assignments:ListPresets()
+	local presets = self:GetPresetsTable()
+	local names = {}
+	for k in pairs(presets) do
+		table_insert(names, k)
+	end
+	table_sort(names)
+	return names
+end
+
+-- Unlock stale solo/previous-raid entries when entering a brand-new multi-caster raid
+-- so auto-negotiation can split duties fresh across the new raid's casters.
+function Assignments:UnlockForFreshRaid(playerName, playerClass, skipPaladins)
+	if not playerName or not playerClass then
+		return
+	end
+	if playerClass == "PALADIN" and not skipPaladins then
+		if self.classBuffs[playerName] then
+			for cls, entry in pairs(self.classBuffs[playerName]) do
+				entry.locked = false
+			end
+		end
+		if self.paladinAuras[playerName] then
+			self.paladinAuras[playerName].locked = false
+		end
+	elseif playerClass == "SHAMAN" then
+		for _, byCaster in pairs(self.shamanTotems) do
+			local entry = byCaster[playerName]
+			if entry and entry.locked then
+				for _, el in ipairs(LBB.Catalog.TOTEM_ELEMENTS) do
+					entry.locked[el] = false
+				end
+			end
+		end
+	else
+		for famID, subs in pairs(self.groupBuffs) do
+			local fam = LBB.Catalog.GetFamily(famID)
+			if fam and fam.class == playerClass then
+				for _, entry in pairs(subs) do
+					if entry.caster == playerName then
+						entry.locked = false
+					end
+				end
+			end
+		end
+		for famID, targets in pairs(self.targetBuffs) do
+			local fam = LBB.Catalog.GetFamily(famID)
+			if fam and fam.class == playerClass then
+				for _, entry in pairs(targets) do
+					if entry.caster == playerName then
+						entry.locked = false
+					end
+				end
+			end
+		end
+	end
+end
 
 function Assignments:ClearAll(preserveLocks, skipPaladins)
 	if not preserveLocks then
@@ -215,6 +426,26 @@ function Assignments:SetGroupBuff(familyID, subgroup, casterName, locked)
 		caster = casterName,
 		locked = locked and true or false,
 	}
+end
+
+function Assignments:SetAllGroupBuffs(familyID, casterName, locked)
+	if not familyID then
+		return
+	end
+	for sg = 1, 8 do
+		self:SetGroupBuff(familyID, sg, casterName, locked)
+	end
+	self:SaveToCharDB()
+end
+
+function Assignments:SetAllClassBuffs(casterName, familyID, locked)
+	if not casterName then
+		return
+	end
+	for _, cls in ipairs(LBB.Catalog.CLASS_ORDER) do
+		self:SetClassBuff(casterName, cls, familyID, locked)
+	end
+	self:SaveToCharDB()
 end
 
 function Assignments:GetGroupBuff(familyID, subgroup)

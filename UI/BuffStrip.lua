@@ -11,9 +11,18 @@ local tostring = tostring
 local table_insert = table.insert
 local table_concat = table.concat
 
+-- Human-readable labels for WoW Keybindings UI (Bindings.xml)
+_G.BINDING_HEADER_LITTLEBUFFBOY = "LittleBuffBoy"
+_G["BINDING_NAME_CLICK LittleBuffBoyAutoBuffBtn:LeftButton"] = "Smart Buff Next Missing (Single)"
+_G["BINDING_NAME_CLICK LittleBuffBoyAutoBuffBtn:RightButton"] = "Smart Buff Next Missing (Group/Greater)"
+_G.BINDING_NAME_LITTLEBUFFBOY_MATRIX = "Toggle Assignment Matrix"
+
 BuffStrip.frame = nil
+BuffStrip.autoTile = nil
 BuffStrip.tiles = {}
 BuffStrip.lastEvals = {}
+BuffStrip.lastAutoAction = nil
+BuffStrip.isHovered = false
 
 local TILE_W = 44
 local TILE_H = 48
@@ -188,6 +197,74 @@ function BuffStrip:Init()
 		self:StopMovingOrSizing()
 		savePosition(self)
 	end)
+	f:SetScript("OnEnter", function()
+		self.isHovered = true
+		if self.frame and self.frame.SetAlpha then
+			self.frame:SetAlpha(1.0)
+		end
+	end)
+	f:SetScript("OnLeave", function()
+		self.isHovered = false
+		self:ApplyHealthyVisibility()
+	end)
+
+	-- Dedicated One-Click Smart Auto-Buff tile (also bound via Bindings.xml -> LittleBuffBoyAutoBuffBtn)
+	local autoTile = _G.CreateFrame("Button", "LittleBuffBoyAutoBuffBtn", f, "SecureActionButtonTemplate")
+	autoTile:SetSize(TILE_W, TILE_H)
+	autoTile:RegisterForClicks("AnyUp", "AnyDown")
+	Theme.ApplyPanel(autoTile, Theme.Colors.header, Theme.Colors.accent)
+
+	local aIcon = autoTile:CreateTexture(nil, "ARTWORK")
+	aIcon:SetSize(30, 30)
+	aIcon:SetPoint("TOP", autoTile, "TOP", 0, -3)
+	aIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+	aIcon:SetTexture("Interface\\AddOns\\LittleBuffBoy\\Media\\MinimapIcon")
+	autoTile._icon = aIcon
+
+	local aBar = autoTile:CreateTexture(nil, "ARTWORK")
+	aBar:SetHeight(3)
+	aBar:SetPoint("BOTTOMLEFT", autoTile, "BOTTOMLEFT", 1, 1)
+	aBar:SetPoint("BOTTOMRIGHT", autoTile, "BOTTOMRIGHT", -1, 1)
+	autoTile._statusBar = aBar
+
+	local aBadge = Theme.CreateFontString(autoTile, 11, "RIGHT", Theme.Colors.accent)
+	aBadge:SetPoint("TOPRIGHT", autoTile, "TOPRIGHT", -3, -2)
+	autoTile._badge = aBadge
+
+	local aTimer = Theme.CreateFontString(autoTile, 9, "CENTER", Theme.Colors.accent)
+	aTimer:SetPoint("BOTTOM", autoTile, "BOTTOM", 0, 5)
+	aTimer:SetText("AUTO")
+	autoTile._timer = aTimer
+
+	autoTile:SetScript("OnEnter", function(selfBtn)
+		self.isHovered = true
+		if self.frame and self.frame.SetAlpha then
+			self.frame:SetAlpha(1.0)
+		end
+		if not _G.GameTooltip then return end
+		local act = self.lastAutoAction
+		_G.GameTooltip:SetOwner(selfBtn, "ANCHOR_TOP")
+		_G.GameTooltip:ClearLines()
+		_G.GameTooltip:AddLine("Smart Auto-Buff (Bindable Hotkey)", 0.22, 0.74, 0.97)
+		if act and act.hasAction then
+			_G.GameTooltip:AddDoubleLine("Next Spell:", tostring(act.singleSpell), 0.7, 0.75, 0.82, 0.2, 0.9, 0.5)
+			_G.GameTooltip:AddDoubleLine("Next Unit:", tostring(act.unit), 0.7, 0.75, 0.82, 1, 1, 1)
+			_G.GameTooltip:AddDoubleLine("Remaining:", string.format("%d missing, %d expiring", act.totalMissing, act.totalExpiring), 0.7, 0.75, 0.82, 0.98, 0.72, 0.18)
+		else
+			_G.GameTooltip:AddLine("All assigned buffs are active and healthy!", 0.2, 0.85, 0.45)
+		end
+		_G.GameTooltip:AddLine(" ")
+		_G.GameTooltip:AddLine("Left-Click / Hotkey: Cast single target on next priority unit", 0.65, 0.85, 1.0)
+		_G.GameTooltip:AddLine("Right-Click / Hotkey: Cast group/greater spell", 0.5, 0.95, 0.6)
+		_G.GameTooltip:Show()
+	end)
+	autoTile:SetScript("OnLeave", function()
+		self.isHovered = false
+		self:ApplyHealthyVisibility()
+		if _G.GameTooltip then _G.GameTooltip:Hide() end
+	end)
+	autoTile:Hide()
+	self.autoTile = autoTile
 
 	-- Compact side control column (Matrix, Nudge, Lock)
 	local ctrl = _G.CreateFrame("Frame", nil, f)
@@ -246,6 +323,40 @@ function BuffStrip:UpdateLockVisual()
 	self.frame._btnLock._label:SetTextColor(c[1], c[2], c[3], 1)
 end
 
+function BuffStrip:ApplyHealthyVisibility()
+	if not self.frame then
+		return
+	end
+	local mode = (LBB.DB and LBB.DB.stripHealthyMode) or "SHOW"
+	local act = self.lastAutoAction
+	local allHealthy = (act ~= nil and act.allHealthy == true)
+
+	if mode == "HIDE" and allHealthy and not self.isHovered then
+		LBB.Compat.RunOutOfCombat("strip_healthy_vis", function()
+			if self.frame then
+				self.frame:Hide()
+			end
+		end)
+		return
+	end
+
+	LBB.Compat.RunOutOfCombat("strip_healthy_vis", function()
+		if self.frame then
+			self.frame:Show()
+		end
+	end)
+
+	if mode == "FADE" and allHealthy and not self.isHovered then
+		if self.frame.SetAlpha then
+			self.frame:SetAlpha(0.35)
+		end
+	else
+		if self.frame.SetAlpha then
+			self.frame:SetAlpha(1.0)
+		end
+	end
+end
+
 function BuffStrip:Refresh()
 	if not self.frame then
 		self:Init()
@@ -258,13 +369,20 @@ function BuffStrip:Refresh()
 	local playerName = vec and vec.name or Compat.GetFullUnitName("player")
 	local duties = LBB.Assignments:GetPlayerDuties(playerName)
 
-	-- If PallyPower is loaded, yield ALL Paladin tiles (Blessings, Auras, Righteous Fury, and Seals)
+	-- Filter yielded Paladin duties AND duties with 0 eligible units in the current roster
+	-- (so a solo Paladin's saved 9-class setup stays saved in the Matrix without showing empty 0/0 tiles while solo!)
 	local filtered = {}
+	local evalsByIdx = {}
 	local ppYield = LBB.Comms and LBB.Comms:IsPallyPowerLoaded()
 	for _, duty in ipairs(duties) do
 		local isPaladinDuty = (duty.kind == "CLASS_BUFF" or duty.kind == "PALADIN_AURA" or duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL")
 		if not (ppYield and isPaladinDuty) then
-			table_insert(filtered, duty)
+			local eval = LBB.Scanner:EvaluateDuty(duty, LBB.Assignments.roster)
+			local isSelfDuty = (duty.kind == "PALADIN_AURA" or duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL" or duty.kind == "SHAMAN_TOTEM")
+			if isSelfDuty or eval.totalEligible > 0 then
+				table_insert(filtered, duty)
+				evalsByIdx[#filtered] = eval
+			end
 		end
 	end
 
@@ -272,6 +390,61 @@ function BuffStrip:Refresh()
 	local scale = (LBB.DB and LBB.DB.stripScale) or 1.0
 	if not inCombat and self.frame.SetScale then
 		self.frame:SetScale(scale)
+	end
+
+	-- Update dedicated Smart Auto-Buff tile & keybinding target
+	local autoAction = LBB.Scanner:GetBestAutoBuffAction(filtered, LBB.Assignments.roster)
+	self.lastAutoAction = autoAction
+	local showAuto = (LBB.DB == nil or LBB.DB.showAutoBuffTile ~= false) and (#filtered > 0)
+	local slotOffset = 0
+
+	if self.autoTile then
+		if showAuto then
+			slotOffset = 1
+			if autoAction.icon then
+				self.autoTile._icon:SetTexture(autoAction.icon)
+			end
+			self.autoTile._icon:SetDesaturated(autoAction.allHealthy)
+			if autoAction.totalMissing > 0 then
+				self.autoTile._badge:SetText(tostring(autoAction.totalMissing))
+				self.autoTile._badge:SetTextColor(Theme.Colors.danger[1], Theme.Colors.danger[2], Theme.Colors.danger[3], 1)
+				self.autoTile._statusBar:SetColorTexture(Theme.Colors.danger[1], Theme.Colors.danger[2], Theme.Colors.danger[3], 1)
+				Theme.SetBorderColor(self.autoTile, Theme.Colors.danger)
+				self.autoTile._timer:SetText("BUFF")
+			elseif autoAction.totalExpiring > 0 then
+				self.autoTile._badge:SetText(tostring(autoAction.totalExpiring))
+				self.autoTile._badge:SetTextColor(Theme.Colors.warn[1], Theme.Colors.warn[2], Theme.Colors.warn[3], 1)
+				self.autoTile._statusBar:SetColorTexture(Theme.Colors.warn[1], Theme.Colors.warn[2], Theme.Colors.warn[3], 1)
+				Theme.SetBorderColor(self.autoTile, Theme.Colors.warn)
+				self.autoTile._timer:SetText("SOON")
+			else
+				self.autoTile._badge:SetText("OK")
+				self.autoTile._badge:SetTextColor(Theme.Colors.good[1], Theme.Colors.good[2], Theme.Colors.good[3], 1)
+				self.autoTile._statusBar:SetColorTexture(Theme.Colors.good[1], Theme.Colors.good[2], Theme.Colors.good[3], 1)
+				Theme.SetBorderColor(self.autoTile, Theme.Colors.accent)
+				self.autoTile._timer:SetText("AUTO")
+			end
+			Compat.SetSecureAttribute(self.autoTile, "type1", "spell")
+			Compat.SetSecureAttribute(self.autoTile, "unit1", autoAction.unit or "player")
+			Compat.SetSecureAttribute(self.autoTile, "spell1", autoAction.singleSpell or "")
+			Compat.SetSecureAttribute(self.autoTile, "type2", "spell")
+			Compat.SetSecureAttribute(self.autoTile, "unit2", autoAction.unit or "player")
+			Compat.SetSecureAttribute(self.autoTile, "spell2", autoAction.groupSpell or "")
+
+			Compat.RunOutOfCombat("strip_auto_layout", function()
+				self.autoTile:ClearAllPoints()
+				if vertical then
+					self.autoTile:SetPoint("TOP", self.frame, "TOP", 0, -(PAD + HEADER_W + 4))
+				else
+					self.autoTile:SetPoint("LEFT", self.frame, "LEFT", PAD + HEADER_W + PAD, 0)
+				end
+				self.autoTile:Show()
+			end)
+		else
+			Compat.RunOutOfCombat("strip_auto_layout", function()
+				self.autoTile:Hide()
+			end)
+		end
 	end
 
 	self.lastEvals = {}
@@ -283,7 +456,7 @@ function BuffStrip:Refresh()
 			tile = createTile(self.frame, i)
 			self.tiles[i] = tile
 		end
-		local eval = LBB.Scanner:EvaluateDuty(duty, LBB.Assignments.roster)
+		local eval = evalsByIdx[i]
 		self.lastEvals[duty.key] = eval
 		tile._eval = eval
 
@@ -373,13 +546,13 @@ function BuffStrip:Refresh()
 		end
 
 		-- Layout updates must also wait until out of combat for secure buttons
-		local idx = i
-		Compat.RunOutOfCombat("strip_layout_" .. idx, function()
+		local slotIdx = i + slotOffset
+		Compat.RunOutOfCombat("strip_layout_" .. i, function()
 			tile:ClearAllPoints()
 			if vertical then
-				tile:SetPoint("TOP", self.frame, "TOP", 0, -(PAD + HEADER_W + 4 + (idx - 1) * (TILE_H + PAD)))
+				tile:SetPoint("TOP", self.frame, "TOP", 0, -(PAD + HEADER_W + 4 + (slotIdx - 1) * (TILE_H + PAD)))
 			else
-				tile:SetPoint("LEFT", self.frame, "LEFT", PAD + HEADER_W + PAD + (idx - 1) * (TILE_W + PAD), 0)
+				tile:SetPoint("LEFT", self.frame, "LEFT", PAD + HEADER_W + PAD + (slotIdx - 1) * (TILE_W + PAD), 0)
 			end
 			tile:Show()
 		end)
@@ -397,17 +570,20 @@ function BuffStrip:Refresh()
 	end
 
 	-- Resize container frame out of combat
+	local totalSlots = count + slotOffset
 	Compat.RunOutOfCombat("strip_frame_size", function()
-		if count == 0 then
+		if totalSlots == 0 then
 			self.frame._idleText:Show()
 			self.frame:SetSize(HEADER_W + 42, TILE_H + PAD * 2)
 		else
 			self.frame._idleText:Hide()
 			if vertical then
-				self.frame:SetSize(TILE_W + PAD * 2, HEADER_W + PAD * 2 + count * (TILE_H + PAD) + 4)
+				self.frame:SetSize(TILE_W + PAD * 2, HEADER_W + PAD * 2 + totalSlots * (TILE_H + PAD) + 4)
 			else
-				self.frame:SetSize(HEADER_W + PAD * 2 + count * (TILE_W + PAD) + PAD, TILE_H + PAD * 2)
+				self.frame:SetSize(HEADER_W + PAD * 2 + totalSlots * (TILE_W + PAD) + PAD, TILE_H + PAD * 2)
 			end
 		end
 	end)
+
+	self:ApplyHealthyVisibility()
 end

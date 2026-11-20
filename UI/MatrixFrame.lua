@@ -81,6 +81,25 @@ local function shortDisplayName(name)
 	return first
 end
 
+local function saveMatrixPos(frame)
+	if not frame or not LBB.CharDB then return end
+	local point, _, relPoint, x, y = frame:GetPoint(1)
+	if point then
+		LBB.CharDB.matrixPos = { point = point, relPoint = relPoint or point, x = x or 0, y = y or 0 }
+	end
+end
+
+local function restoreMatrixPos(frame)
+	if not frame then return end
+	frame:ClearAllPoints()
+	local pos = LBB.CharDB and LBB.CharDB.matrixPos
+	if pos and pos.point then
+		frame:SetPoint(pos.point, _G.UIParent, pos.relPoint or pos.point, pos.x or 0, pos.y or 0)
+	else
+		frame:SetPoint("CENTER", _G.UIParent, "CENTER", 0, 30)
+	end
+end
+
 function MatrixFrame:Init()
 	if self.frame then
 		return self.frame
@@ -88,7 +107,7 @@ function MatrixFrame:Init()
 	local Theme = LBB.Theme
 	local f = _G.CreateFrame("Frame", "LittleBuffBoyMatrixFrame", _G.UIParent)
 	f:SetSize(FRAME_W, FRAME_H)
-	f:SetPoint("CENTER", _G.UIParent, "CENTER", 0, 30)
+	restoreMatrixPos(f)
 	f:SetMovable(true)
 	f:SetClampedToScreen(true)
 	f:EnableMouse(true)
@@ -97,7 +116,10 @@ function MatrixFrame:Init()
 	Theme.ApplyPanel(f, Theme.Colors.bg, Theme.Colors.borderLight)
 
 	f:SetScript("OnDragStart", function(self) self:StartMoving() end)
-	f:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+	f:SetScript("OnDragStop", function(self)
+		self:StopMovingOrSizing()
+		saveMatrixPos(self)
+	end)
 	f:SetScript("OnHide", function()
 		if Theme.HideDropdownMenu then
 			Theme.HideDropdownMenu()
@@ -166,42 +188,49 @@ function MatrixFrame:Init()
 	footer:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 8, 4)
 	footer:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -8, 4)
 
-	local btnAuto = Theme.CreateButton(footer, "Auto-Assign", 96, 22, function()
+	local btnAuto = Theme.CreateButton(footer, "Auto-Assign", 86, 22, function()
 		if _G.IsShiftKeyDown and _G.IsShiftKeyDown() then
 			LBB:ResetAssignments()
 		else
-			LBB:RunNegotiator(true)
+			LBB:RunNegotiator(true, { forceFresh = true })
 		end
 	end)
 	btnAuto:SetPoint("LEFT", footer, "LEFT", 0, 0)
 	btnAuto._tooltipText = "Re-run deterministic auto-negotiation (preserves locked cells). Shift+Click unlocks all."
 
-	local btnReset = Theme.CreateButton(footer, "Reset Locks", 88, 22, function()
+	local btnReset = Theme.CreateButton(footer, "Reset Locks", 80, 22, function()
 		LBB:ResetAssignments()
 	end)
-	btnReset:SetPoint("LEFT", btnAuto, "RIGHT", 6, 0)
+	btnReset:SetPoint("LEFT", btnAuto, "RIGHT", 5, 0)
 	btnReset._tooltipText = "Clear all manual overrides and re-negotiate"
 
-	local btnSync = Theme.CreateButton(footer, "Sync", 60, 22, function()
+	local btnPresets = Theme.CreateButton(footer, "Presets v", 74, 22, function(selfBtn)
+		Theme.ShowDropdownMenu(selfBtn, MatrixFrame:BuildPresetsMenu())
+	end)
+	btnPresets:SetPoint("LEFT", btnReset, "RIGHT", 5, 0)
+	btnPresets._tooltipText = "Save or load named buff/aura/totem presets (Solo, Dungeon, Raid, or custom)"
+	f._btnPresets = btnPresets
+
+	local btnSync = Theme.CreateButton(footer, "Sync", 52, 22, function()
 		LBB:SyncGroup()
 	end)
-	btnSync:SetPoint("LEFT", btnReset, "RIGHT", 6, 0)
+	btnSync:SetPoint("LEFT", btnPresets, "RIGHT", 5, 0)
 	btnSync._tooltipText = "Broadcast capabilities and request updates from LBB1 & PLPWR peers"
 
-	local btnNudge = Theme.CreateButton(footer, "Nudge", 64, 22, function()
+	local btnNudge = Theme.CreateButton(footer, "Nudge", 56, 22, function()
 		if LBB.ReminderPill then
 			LBB.ReminderPill:ShowNudgeBar()
 		end
 	end)
-	btnNudge:SetPoint("LEFT", btnSync, "RIGHT", 6, 0)
+	btnNudge:SetPoint("LEFT", btnSync, "RIGHT", 5, 0)
 	btnNudge._tooltipText = "Open Ready Check & Smart Whisper Nudge Bar"
 
-	local btnOpt = Theme.CreateButton(footer, "Options", 68, 22, function()
+	local btnOpt = Theme.CreateButton(footer, "Options", 60, 22, function()
 		if LBB.Options then
 			LBB.Options:Toggle()
 		end
 	end)
-	btnOpt:SetPoint("LEFT", btnNudge, "RIGHT", 6, 0)
+	btnOpt:SetPoint("LEFT", btnNudge, "RIGHT", 5, 0)
 
 	local ppStatus = Theme.CreateFontString(footer, 10, "RIGHT", Theme.Colors.good)
 	ppStatus:SetPoint("RIGHT", footer, "RIGHT", -4, 0)
@@ -312,6 +341,81 @@ end
 -- Dropdown Builders (Left-Click selection menus with Per-Player Overrides)
 -- =========================================================================
 
+function MatrixFrame:BuildPresetsMenu()
+	local Theme = LBB.Theme
+	local Assignments = LBB.Assignments
+	local savedNames = Assignments:ListPresets()
+	local activeName = LBB.CharDB and LBB.CharDB.activePresetName
+
+	local items = {
+		{ isTitle = true, text = "Saved Character Presets" },
+	}
+
+	if #savedNames == 0 then
+		table_insert(items, { isTitle = true, text = "No presets saved yet", color = Theme.Colors.muted })
+	else
+		for _, pName in ipairs(savedNames) do
+			local nameRef = pName
+			table_insert(items, {
+				text = pName,
+				checked = (activeName == pName),
+				rightText = "Actions >",
+				rightColor = Theme.Colors.accent,
+				submenu = {
+					{ isTitle = true, text = "Preset: " .. pName },
+					{
+						text = "Load Preset",
+						color = Theme.Colors.good,
+						onClick = function()
+							if LBB.LoadPreset then
+								LBB:LoadPreset(nameRef)
+							else
+								Assignments:LoadPreset(nameRef, LBB.Comms:IsPallyPowerLoaded())
+								LBB:RefreshUI()
+							end
+						end,
+					},
+					{
+						text = "Overwrite With Current",
+						color = Theme.Colors.warn,
+						onClick = function()
+							Assignments:SavePreset(nameRef)
+							if LBB.Print then LBB:Print("Saved preset '" .. nameRef .. "'.") end
+							LBB:RefreshUI()
+						end,
+					},
+					{
+						text = "Delete Preset",
+						color = Theme.Colors.danger,
+						onClick = function()
+							Assignments:DeletePreset(nameRef)
+							if LBB.Print then LBB:Print("Deleted preset '" .. nameRef .. "'.") end
+							LBB:RefreshUI()
+						end,
+					},
+				},
+			})
+		end
+	end
+
+	table_insert(items, { isSeparator = true })
+	table_insert(items, { isTitle = true, text = "Quick Save Current Setup As" })
+	for _, quickName in ipairs({ "Solo", "Dungeon", "Raid" }) do
+		local qRef = quickName
+		table_insert(items, {
+			text = "Save as \"" .. quickName .. "\"",
+			color = Theme.Colors.accent,
+			onClick = function()
+				Assignments:SavePreset(qRef)
+				if LBB.Print then LBB:Print("Saved preset '" .. qRef .. "'.") end
+				LBB:RefreshUI()
+			end,
+		})
+	end
+	table_insert(items, { isTitle = true, text = "Tip: /lbb preset save <name>", color = Theme.Colors.muted })
+	return items
+end
+
 function MatrixFrame:BuildGroupBuffMenu(famID, sg, casters, applyFn)
 	local fam = LBB.Catalog.GetFamily(famID)
 	local cur = LBB.Assignments:GetGroupBuff(famID, sg)
@@ -339,7 +443,40 @@ function MatrixFrame:BuildGroupBuffMenu(famID, sg, casters, applyFn)
 			})
 		end
 	end
+
+	-- 1-Click Apply to ALL Groups (G1-G8)
+	local allGroupSub = {
+		{ isTitle = true, text = (fam and fam.shortName or famID) .. " -> ALL Groups (G1-G8)" },
+	}
+	for _, cName in ipairs(casters) do
+		local casterRef = cName
+		table_insert(allGroupSub, {
+			text = LBB.Theme.ColorizeName(cName, fam.class),
+			onClick = function()
+				LBB.Assignments:SetAllGroupBuffs(famID, casterRef, true)
+				LBB.Comms:BroadcastGroupAll(famID, casterRef, true)
+				LBB:RefreshUI()
+			end,
+		})
+	end
+	table_insert(allGroupSub, { isSeparator = true })
+	table_insert(allGroupSub, {
+		text = "Clear ALL Groups",
+		color = LBB.Theme.Colors.danger,
+		onClick = function()
+			LBB.Assignments:SetAllGroupBuffs(famID, nil, true)
+			LBB.Comms:BroadcastGroupAll(famID, nil, true)
+			LBB:RefreshUI()
+		end,
+	})
+
 	table_insert(items, { isSeparator = true })
+	table_insert(items, {
+		text = "Apply to ALL Groups (G1-G8)",
+		rightText = "All >",
+		rightColor = LBB.Theme.Colors.accent,
+		submenu = allGroupSub,
+	})
 	table_insert(items, {
 		text = "Clear (Unassigned)",
 		color = LBB.Theme.Colors.danger,
@@ -390,7 +527,40 @@ function MatrixFrame:BuildPaladinClassMenu(pallyName, classToken, applyClassFn)
 		})
 	end
 
+	-- 1-Click Apply to ALL Classes (uses native PLPWR MASSIGN)
+	local allClassSub = {
+		{ isTitle = true, text = shortDisplayName(pallyName) .. " -> ALL 9 Classes" },
+	}
+	for _, famID in ipairs(blessingList) do
+		local fam = Catalog.GetFamily(famID)
+		local fRef = famID
+		table_insert(allClassSub, {
+			text = fam and fam.name or famID,
+			onClick = function()
+				Assignments:SetAllClassBuffs(pallyName, fRef, true)
+				LBB.Comms:BroadcastClassAll(pallyName, fRef, true)
+				LBB:RefreshUI()
+			end,
+		})
+	end
+	table_insert(allClassSub, { isSeparator = true })
+	table_insert(allClassSub, {
+		text = "Clear ALL Classes",
+		color = Theme.Colors.danger,
+		onClick = function()
+			Assignments:SetAllClassBuffs(pallyName, nil, true)
+			LBB.Comms:BroadcastClassAll(pallyName, nil, true)
+			LBB:RefreshUI()
+		end,
+	})
+
 	table_insert(items, { isSeparator = true })
+	table_insert(items, {
+		text = "Apply to ALL Classes",
+		rightText = "MASSIGN >",
+		rightColor = Theme.Colors.accent,
+		submenu = allClassSub,
+	})
 	table_insert(items, {
 		text = "Clear Class Blessing",
 		color = Theme.Colors.danger,
@@ -430,6 +600,7 @@ function MatrixFrame:BuildPaladinClassMenu(pallyName, classToken, applyClassFn)
 					checked = (ovFam == nil),
 					onClick = function()
 						Assignments:SetPaladinNormalOverride(pallyName, targetName, classToken, nil, false)
+						Assignments:SaveToCharDB()
 						LBB.Comms:BroadcastLock("NORMAL", targetName, nil, pallyName, false, classToken)
 						LBB:RefreshUI()
 					end,
@@ -444,6 +615,7 @@ function MatrixFrame:BuildPaladinClassMenu(pallyName, classToken, applyClassFn)
 					checked = (ov and ov.familyID == famID),
 					onClick = function()
 						Assignments:SetPaladinNormalOverride(pallyName, targetName, classToken, fRef, true)
+						Assignments:SaveToCharDB()
 						LBB.Comms:BroadcastLock("NORMAL", targetName, fRef, pallyName, true, classToken)
 						LBB:RefreshUI()
 					end,
@@ -648,6 +820,7 @@ function MatrixFrame:RenderBuffsTab(content)
 			local famRef, sgRef = famID, sg
 			local function applyChange(newCaster, newLocked)
 				Assignments:SetGroupBuff(famRef, sgRef, newCaster, newLocked)
+				Assignments:SaveToCharDB()
 				LBB.Comms:BroadcastLock("GROUP", tostring(sgRef), famRef, newCaster, newLocked)
 				LBB:RefreshUI()
 			end
@@ -761,6 +934,7 @@ function MatrixFrame:RenderBuffsTab(content)
 				local function applyPaladin(newFam, newLock)
 					if ppYield then return end
 					Assignments:SetClassBuff(pRef, clsRef, newFam, newLock)
+					Assignments:SaveToCharDB()
 					LBB.Comms:BroadcastLock("CLASS", clsRef, newFam, pRef, newLock)
 					LBB:RefreshUI()
 				end
@@ -806,6 +980,7 @@ function MatrixFrame:RenderBuffsTab(content)
 			local function applyAura(newAuraID, newLock)
 				if ppYield then return end
 				Assignments:SetPaladinAura(pRef, newAuraID, newLock)
+				Assignments:SaveToCharDB()
 				LBB.Comms:BroadcastLock("AURA", pRef, tostring(newAuraID or 0), pRef, newLock)
 				LBB:RefreshUI()
 			end
@@ -958,6 +1133,7 @@ function MatrixFrame:RenderTotemsTab(content)
 			local sName, sgRef, elRef = s.name, sg, el
 			local function applyTotem(newID, newLock)
 				Assignments:SetShamanTotem(sgRef, sName, elRef, newID, newLock)
+				Assignments:SaveToCharDB()
 				local cur = Assignments:GetShamanTotems(sgRef, sName) or { locked = {} }
 				local mask = ""
 				for _, element in ipairs(Catalog.TOTEM_ELEMENTS) do

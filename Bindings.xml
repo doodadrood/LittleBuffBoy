@@ -1,0 +1,11 @@
+<Bindings>
+	<Binding name="CLICK LittleBuffBoyAutoBuffBtn:LeftButton" header="LITTLEBUFFBOY" category="ADDONS">
+		-- Smart Buff Next Missing Duty (Single Target)
+	</Binding>
+	<Binding name="CLICK LittleBuffBoyAutoBuffBtn:RightButton" category="ADDONS">
+		-- Smart Buff Next Missing Duty (Group / Greater)
+	</Binding>
+	<Binding name="LITTLEBUFFBOY_MATRIX" category="ADDONS">
+		if LittleBuffBoy and LittleBuffBoy.MatrixFrame then LittleBuffBoy.MatrixFrame:Toggle() end
+	</Binding>
+</Bindings>

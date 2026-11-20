@@ -140,18 +140,18 @@ local function filterKnowsFamily(casters, familyID)
 	return out
 end
 
-local function assignGroupIfUnlocked(assignments, familyID, subgroup, casterName)
+local function assignGroupIfUnlocked(assignments, familyID, subgroup, casterName, preserveExisting)
 	local existing = assignments:GetGroupBuff(familyID, subgroup)
-	if existing and existing.locked then
+	if existing and (existing.locked or preserveExisting) then
 		return false
 	end
 	assignments:SetGroupBuff(familyID, subgroup, casterName, false)
 	return true
 end
 
-local function assignTargetIfUnlocked(assignments, familyID, targetName, casterName)
+local function assignTargetIfUnlocked(assignments, familyID, targetName, casterName, preserveExisting)
 	local existing = assignments:GetTargetBuff(familyID, targetName)
-	if existing and existing.locked then
+	if existing and (existing.locked or preserveExisting) then
 		return false
 	end
 	assignments:SetTargetBuff(familyID, targetName, casterName, false)
@@ -162,7 +162,7 @@ end
 --    1 Priest  -> covers all known buffs across all active subgroups
 --    2 Priests -> split by buff family (highest Imp. Fort takes Fort; Spirit/ShadowProt go to the other Priest if known)
 --    3+ Priests -> partition raid subgroups evenly per buff family
-local function solvePriests(roster, capabilitiesByCaster, assignments)
+local function solvePriests(roster, capabilitiesByCaster, assignments, preserveExisting)
 	local priests = collectCastersByClass(roster, capabilitiesByCaster, "PRIEST")
 	if #priests == 0 then
 		return
@@ -181,17 +181,17 @@ local function solvePriests(roster, capabilitiesByCaster, assignments)
 		local p = priests[1]
 		if #fortCasters == 1 then
 			for _, sg in ipairs(allSubgroups) do
-				assignGroupIfUnlocked(assignments, "FORTITUDE", sg, p.name)
+				assignGroupIfUnlocked(assignments, "FORTITUDE", sg, p.name, preserveExisting)
 			end
 		end
 		if #spiritCasters == 1 then
 			for _, sg in ipairs(manaSubgroups) do
-				assignGroupIfUnlocked(assignments, "SPIRIT", sg, p.name)
+				assignGroupIfUnlocked(assignments, "SPIRIT", sg, p.name, preserveExisting)
 			end
 		end
 		if #sprotCasters == 1 then
 			for _, sg in ipairs(allSubgroups) do
-				assignGroupIfUnlocked(assignments, "SHADOW_PROT", sg, p.name)
+				assignGroupIfUnlocked(assignments, "SHADOW_PROT", sg, p.name, preserveExisting)
 			end
 		end
 		return
@@ -202,7 +202,7 @@ local function solvePriests(roster, capabilitiesByCaster, assignments)
 		local fortOwner = fortCasters[1]
 		if fortOwner then
 			for _, sg in ipairs(allSubgroups) do
-				assignGroupIfUnlocked(assignments, "FORTITUDE", sg, fortOwner.name)
+				assignGroupIfUnlocked(assignments, "FORTITUDE", sg, fortOwner.name, preserveExisting)
 			end
 		end
 
@@ -219,7 +219,7 @@ local function solvePriests(roster, capabilitiesByCaster, assignments)
 		end
 		if spiritOwner then
 			for _, sg in ipairs(manaSubgroups) do
-				assignGroupIfUnlocked(assignments, "SPIRIT", sg, spiritOwner.name)
+				assignGroupIfUnlocked(assignments, "SPIRIT", sg, spiritOwner.name, preserveExisting)
 			end
 		end
 
@@ -236,7 +236,7 @@ local function solvePriests(roster, capabilitiesByCaster, assignments)
 		end
 		if sprotOwner then
 			for _, sg in ipairs(allSubgroups) do
-				assignGroupIfUnlocked(assignments, "SHADOW_PROT", sg, sprotOwner.name)
+				assignGroupIfUnlocked(assignments, "SHADOW_PROT", sg, sprotOwner.name, preserveExisting)
 			end
 		end
 		return
@@ -247,7 +247,7 @@ local function solvePriests(roster, capabilitiesByCaster, assignments)
 		local buckets = Negotiator.PartitionSubgroups(allSubgroups, #fortCasters)
 		for i, caster in ipairs(fortCasters) do
 			for _, sg in ipairs(buckets[i] or {}) do
-				assignGroupIfUnlocked(assignments, "FORTITUDE", sg, caster.name)
+				assignGroupIfUnlocked(assignments, "FORTITUDE", sg, caster.name, preserveExisting)
 			end
 		end
 	end
@@ -256,7 +256,7 @@ local function solvePriests(roster, capabilitiesByCaster, assignments)
 		local buckets = Negotiator.PartitionSubgroups(manaSubgroups, #spiritCasters)
 		for i, caster in ipairs(spiritCasters) do
 			for _, sg in ipairs(buckets[i] or {}) do
-				assignGroupIfUnlocked(assignments, "SPIRIT", sg, caster.name)
+				assignGroupIfUnlocked(assignments, "SPIRIT", sg, caster.name, preserveExisting)
 			end
 		end
 	end
@@ -272,14 +272,14 @@ local function solvePriests(roster, capabilitiesByCaster, assignments)
 		local buckets = Negotiator.PartitionSubgroups(allSubgroups, #rotated)
 		for i, caster in ipairs(rotated) do
 			for _, sg in ipairs(buckets[i] or {}) do
-				assignGroupIfUnlocked(assignments, "SHADOW_PROT", sg, caster.name)
+				assignGroupIfUnlocked(assignments, "SHADOW_PROT", sg, caster.name, preserveExisting)
 			end
 		end
 	end
 end
 
 -- 2. Druids: split Mark/Gift of the Wild evenly by subgroup + assign Thorns to tanks/melee
-local function solveDruids(roster, capabilitiesByCaster, assignments)
+local function solveDruids(roster, capabilitiesByCaster, assignments, preserveExisting)
 	local druids = collectCastersByClass(roster, capabilitiesByCaster, "DRUID")
 	if #druids == 0 then
 		return
@@ -291,7 +291,7 @@ local function solveDruids(roster, capabilitiesByCaster, assignments)
 		local buckets = Negotiator.PartitionSubgroups(allSubgroups, #motwCasters)
 		for i, caster in ipairs(motwCasters) do
 			for _, sg in ipairs(buckets[i] or {}) do
-				assignGroupIfUnlocked(assignments, "MOTW", sg, caster.name)
+				assignGroupIfUnlocked(assignments, "MOTW", sg, caster.name, preserveExisting)
 			end
 		end
 	end
@@ -317,13 +317,13 @@ local function solveDruids(roster, capabilitiesByCaster, assignments)
 		end
 		for idx, target in ipairs(targets) do
 			local caster = thornsCasters[((idx - 1) % #thornsCasters) + 1]
-			assignTargetIfUnlocked(assignments, "THORNS", target.name, caster.name)
+			assignTargetIfUnlocked(assignments, "THORNS", target.name, caster.name, preserveExisting)
 		end
 	end
 end
 
 -- 3. Mages: split Arcane Intellect/Brilliance evenly across mana-containing subgroups
-local function solveMages(roster, capabilitiesByCaster, assignments)
+local function solveMages(roster, capabilitiesByCaster, assignments, preserveExisting)
 	local mages = collectCastersByClass(roster, capabilitiesByCaster, "MAGE")
 	if #mages == 0 then
 		return
@@ -336,7 +336,7 @@ local function solveMages(roster, capabilitiesByCaster, assignments)
 		local buckets = Negotiator.PartitionSubgroups(manaSubgroups, #aiCasters)
 		for i, caster in ipairs(aiCasters) do
 			for _, sg in ipairs(buckets[i] or {}) do
-				assignGroupIfUnlocked(assignments, "INTELLECT", sg, caster.name)
+				assignGroupIfUnlocked(assignments, "INTELLECT", sg, caster.name, preserveExisting)
 			end
 		end
 	end
@@ -355,16 +355,17 @@ local function solvePaladins(roster, capabilitiesByCaster, assignments, options)
 	local Catalog = LBB.Catalog
 	local activeClasses = collectActiveClasses(roster)
 
+	local preserveExisting = options and options.preserveExisting and true or false
 	-- For each class present in raid/party, assign distinct blessings across Paladins by talent priority
 	for _, cls in ipairs(activeClasses) do
 		local priorities = Catalog.PALADIN_CLASS_PRIORITIES[cls] or { "BOK", "BOW", "BOM", "BOSALV", "BOL", "BOSANC" }
 		local usedBlessings = {}
 		local assignedPaladins = {}
 
-		-- First respect any locked assignments on this class so we don't duplicate or overwrite them
+		-- First respect any locked (or preserved restored) assignments on this class
 		for _, p in ipairs(paladins) do
 			local existing = assignments:GetClassBuff(p.name, cls)
-			if existing and existing.locked then
+			if existing and (existing.locked or preserveExisting) then
 				assignedPaladins[p.name] = true
 				if existing.familyID then
 					usedBlessings[existing.familyID] = true
@@ -403,7 +404,7 @@ local function solvePaladins(roster, capabilitiesByCaster, assignments, options)
 		local usedAuras = {}
 		for _, p in ipairs(groupPaladins) do
 			local existing = assignments:GetPaladinAura(p.name)
-			if existing and existing.locked then
+			if existing and (existing.locked or preserveExisting) then
 				if existing.auraID and existing.auraID > 0 then
 					usedAuras[existing.auraID] = true
 				end
@@ -411,7 +412,7 @@ local function solvePaladins(roster, capabilitiesByCaster, assignments, options)
 		end
 		for _, p in ipairs(groupPaladins) do
 			local existing = assignments:GetPaladinAura(p.name)
-			if not (existing and existing.locked) then
+			if not (existing and (existing.locked or preserveExisting)) then
 				local chosen = nil
 				for _, aid in ipairs(auraPriority) do
 					if not usedAuras[aid] and p.vec and p.vec.auras and p.vec.auras[aid] then
@@ -451,7 +452,7 @@ local function determinePartyRole(roster, subgroup)
 	return (meleeCount >= casterCount) and "MELEE" or "CASTER"
 end
 
-local function solveShamans(roster, capabilitiesByCaster, assignments)
+local function solveShamans(roster, capabilitiesByCaster, assignments, preserveExisting)
 	local shamans = collectCastersByClass(roster, capabilitiesByCaster, "SHAMAN")
 	if #shamans == 0 then
 		return
@@ -469,18 +470,19 @@ local function solveShamans(roster, capabilitiesByCaster, assignments)
 
 		for _, element in ipairs(Catalog.TOTEM_ELEMENTS) do
 			local usedTotems = {}
-			-- Preserve locked totems in this party/element first
+			-- Preserve locked (or restored) totems in this party/element first
 			for _, s in ipairs(partyShamans) do
 				local existing = assignments:GetShamanTotems(sg, s.name)
-				if existing and existing.locked and existing.locked[element] and existing[element] then
+				local keep = existing and ((existing.locked and existing.locked[element]) or (preserveExisting and existing[element] ~= nil))
+				if keep and existing[element] then
 					usedTotems[existing[element]] = true
 				end
 			end
 
 			for _, s in ipairs(partyShamans) do
 				local existing = assignments:GetShamanTotems(sg, s.name)
-				local isLocked = existing and existing.locked and existing.locked[element]
-				if not isLocked then
+				local keep = existing and ((existing.locked and existing.locked[element]) or (preserveExisting and existing[element] ~= nil))
+				if not keep then
 					local knownEl = s.vec and s.vec.totems and s.vec.totems[element]
 					local chosen = nil
 					if knownEl then
@@ -502,7 +504,7 @@ local function solveShamans(roster, capabilitiesByCaster, assignments)
 end
 
 -- 6. Warriors: highest-talent Battle Shout per party
-local function solveWarriors(roster, capabilitiesByCaster, assignments)
+local function solveWarriors(roster, capabilitiesByCaster, assignments, preserveExisting)
 	local warriors = collectCastersByClass(roster, capabilitiesByCaster, "WARRIOR")
 	if #warriors == 0 then
 		return
@@ -517,13 +519,13 @@ local function solveWarriors(roster, capabilitiesByCaster, assignments)
 	for sg, partyWarriors in pairs(bySubgroup) do
 		local ordered = sortCastersForFamily(partyWarriors, "BATTLE_SHOUT")
 		if ordered[1] then
-			assignGroupIfUnlocked(assignments, "BATTLE_SHOUT", sg, ordered[1].name)
+			assignGroupIfUnlocked(assignments, "BATTLE_SHOUT", sg, ordered[1].name, preserveExisting)
 		end
 	end
 end
 
 -- 7. Warlocks: Blood Pact per party + Soulstone on primary healer/tank
-local function solveWarlocks(roster, capabilitiesByCaster, assignments)
+local function solveWarlocks(roster, capabilitiesByCaster, assignments, preserveExisting)
 	local warlocks = collectCastersByClass(roster, capabilitiesByCaster, "WARLOCK")
 	if #warlocks == 0 then
 		return
@@ -540,7 +542,7 @@ local function solveWarlocks(roster, capabilitiesByCaster, assignments)
 	for sg, partyLocks in pairs(bySubgroup) do
 		local ordered = sortCastersForFamily(partyLocks, "BLOOD_PACT")
 		if ordered[1] then
-			assignGroupIfUnlocked(assignments, "BLOOD_PACT", sg, ordered[1].name)
+			assignGroupIfUnlocked(assignments, "BLOOD_PACT", sg, ordered[1].name, preserveExisting)
 		end
 	end
 
@@ -571,7 +573,7 @@ local function solveWarlocks(roster, capabilitiesByCaster, assignments)
 		for i = 1, #ssCasters do
 			local target = targets[i]
 			if target then
-				assignTargetIfUnlocked(assignments, "SOULSTONE", target.name, ssCasters[i].name)
+				assignTargetIfUnlocked(assignments, "SOULSTONE", target.name, ssCasters[i].name, preserveExisting)
 			end
 		end
 	end
@@ -582,18 +584,21 @@ function Negotiator.Solve(roster, capabilitiesByCaster, assignments, options)
 	roster = roster or {}
 	capabilitiesByCaster = capabilitiesByCaster or {}
 	options = options or {}
+	local preserveExisting = options.preserveExisting and true or false
 
-	-- Clear unlocked assignments while strictly preserving all locked overrides
-	-- (and preserving Paladin assignments when yielding control to PallyPower)
-	assignments:ClearAll(true, options.pallyPowerYield and true or false)
+	if not preserveExisting then
+		-- Clear unlocked assignments while strictly preserving all locked overrides
+		-- (and preserving Paladin assignments when yielding control to PallyPower)
+		assignments:ClearAll(true, options.pallyPowerYield and true or false)
+	end
 
-	solvePriests(roster, capabilitiesByCaster, assignments)
-	solveDruids(roster, capabilitiesByCaster, assignments)
-	solveMages(roster, capabilitiesByCaster, assignments)
+	solvePriests(roster, capabilitiesByCaster, assignments, preserveExisting)
+	solveDruids(roster, capabilitiesByCaster, assignments, preserveExisting)
+	solveMages(roster, capabilitiesByCaster, assignments, preserveExisting)
 	solvePaladins(roster, capabilitiesByCaster, assignments, options)
-	solveShamans(roster, capabilitiesByCaster, assignments)
-	solveWarriors(roster, capabilitiesByCaster, assignments)
-	solveWarlocks(roster, capabilitiesByCaster, assignments)
+	solveShamans(roster, capabilitiesByCaster, assignments, preserveExisting)
+	solveWarriors(roster, capabilitiesByCaster, assignments, preserveExisting)
+	solveWarlocks(roster, capabilitiesByCaster, assignments, preserveExisting)
 
 	return assignments
 end

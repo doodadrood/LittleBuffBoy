@@ -636,6 +636,90 @@ function Scanner:EvaluateDuty(duty, roster, options)
 	}
 end
 
+local function dutyAutoPriority(duty, eval)
+	if eval.missingCount > 0 then
+		if duty.kind == "PALADIN_AURA" or duty.kind == "RIGHTEOUS_FURY" then
+			return 100
+		elseif duty.kind == "SHAMAN_TOTEM" or duty.familyID == "BATTLE_SHOUT" then
+			return 90
+		elseif duty.kind == "PALADIN_SEAL" then
+			return 85
+		elseif eval.nextTarget and eval.nextTarget.inRange == true then
+			return 70 + (eval.nextTarget.rolePriority or 1)
+		elseif eval.nextTarget and eval.nextTarget.inRange == nil then
+			return 60 + (eval.nextTarget.rolePriority or 1)
+		else
+			return 40 + (eval.nextTarget and eval.nextTarget.rolePriority or 1)
+		end
+	elseif eval.expiringCount > 0 then
+		if duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL" then
+			return 35
+		elseif eval.nextTarget and eval.nextTarget.inRange ~= false then
+			return 25 + (eval.nextTarget.rolePriority or 1)
+		else
+			return 10
+		end
+	end
+	return 0
+end
+
+-- Pick the single highest-priority next action across ALL of a player's active duties
+-- (Powers the one-click Smart Buff tile & WoW Keybinding in Bindings.xml)
+function Scanner:GetBestAutoBuffAction(duties, roster, options)
+	local totalMissing = 0
+	local totalExpiring = 0
+	local bestEval = nil
+	local bestScore = 0
+	local fallbackEval = nil
+
+	for _, duty in ipairs(duties or {}) do
+		local eval = self:EvaluateDuty(duty, roster, options)
+		if eval.totalEligible > 0 then
+			if not fallbackEval then
+				fallbackEval = eval
+			end
+			totalMissing = totalMissing + (eval.missingCount or 0)
+			totalExpiring = totalExpiring + (eval.expiringCount or 0)
+			if eval.needCount > 0 then
+				local score = dutyAutoPriority(duty, eval)
+				if score > bestScore then
+					bestScore = score
+					bestEval = eval
+				elseif score == bestScore and bestEval then
+					local remA = eval.shortestRemaining or 0
+					local remB = bestEval.shortestRemaining or 0
+					if remA < remB then
+						bestEval = eval
+					end
+				end
+			end
+		end
+	end
+
+	local chosen = bestEval or fallbackEval
+	local targetUnit = "player"
+	if chosen then
+		local k = chosen.duty.kind
+		if k ~= "PALADIN_AURA" and k ~= "SHAMAN_TOTEM" and k ~= "RIGHTEOUS_FURY" and k ~= "PALADIN_SEAL" and chosen.duty.familyID ~= "BATTLE_SHOUT" then
+			targetUnit = (chosen.nextTarget and chosen.nextTarget.unit) or "player"
+		end
+	end
+
+	return {
+		hasAction = bestEval ~= nil,
+		allHealthy = (totalMissing == 0 and totalExpiring == 0),
+		totalMissing = totalMissing,
+		totalExpiring = totalExpiring,
+		nextDuty = chosen and chosen.duty or nil,
+		nextEval = chosen,
+		unit = targetUnit,
+		singleSpell = chosen and chosen.singleSpellName or "",
+		groupSpell = chosen and ((chosen.hasGroup and chosen.groupSpellName) or chosen.singleSpellName) or "",
+		icon = chosen and chosen.icon or "Interface\\AddOns\\LittleBuffBoy\\Media\\MinimapIcon",
+		recommendGroup = chosen and chosen.recommendGroup or false,
+	}
+end
+
 -- Build a full Ready Check / Nudge report across all assigned duties + player consumables
 function Scanner:BuildReadinessReport(roster, assignments)
 	local Catalog = LBB.Catalog

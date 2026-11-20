@@ -4,9 +4,13 @@
 ## Author: doodadrood
 ## Version: 0.1.0
 ## DefaultState: enabled
-## OptionalDeps: PallyPower
+## OptionalDeps: PallyPower, LibDBIcon-1.0, OneForAll
 ## SavedVariables: LittleBuffBoyDB
 ## SavedVariablesPerCharacter: LittleBuffBoyCharDB
+## IconTexture: Interface\AddOns\LittleBuffBoy\Media\MinimapIcon
+## AddonCompartmentFunc: LittleBuffBoy_OnAddonCompartmentClick
+## AddonCompartmentFuncOnEnter: LittleBuffBoy_OnAddonCompartmentEnter
+## AddonCompartmentFuncOnLeave: LittleBuffBoy_OnAddonCompartmentLeave
 ## X-Category: Buffs & Debuffs
 ## X-Curse-Project-ID: 1817737
 
@@ -24,5 +28,6 @@ UI/BuffStrip.lua
 UI/MatrixFrame.lua
 UI/RaidIndicators.lua
 UI/ReminderPill.lua
+UI/MinimapButton.lua
 UI/Options.lua
 Init.lua

@@ -22,6 +22,25 @@ ReminderPill.lastReport = nil
 -- 1. Minimap Tracking One-Click Restore Pill
 -- =========================================================================
 
+local function saveFramePos(frame, key)
+	if not frame or not LBB.CharDB then return end
+	local point, _, relPoint, x, y = frame:GetPoint(1)
+	if point then
+		LBB.CharDB[key] = { point = point, relPoint = relPoint or point, x = x or 0, y = y or 0 }
+	end
+end
+
+local function restoreFramePos(frame, key, defPoint, defX, defY)
+	if not frame then return end
+	frame:ClearAllPoints()
+	local pos = LBB.CharDB and LBB.CharDB[key]
+	if pos and pos.point then
+		frame:SetPoint(pos.point, _G.UIParent, pos.relPoint or pos.point, pos.x or 0, pos.y or 0)
+	else
+		frame:SetPoint(defPoint, _G.UIParent, defPoint, defX or 0, defY or 0)
+	end
+end
+
 function ReminderPill:InitTrackPill()
 	if self.trackPill then
 		return self.trackPill
@@ -29,7 +48,7 @@ function ReminderPill:InitTrackPill()
 	local Theme = LBB.Theme
 	local pill = _G.CreateFrame("Button", "LittleBuffBoyTrackingPill", _G.UIParent)
 	pill:SetSize(230, 30)
-	pill:SetPoint("TOP", _G.UIParent, "TOP", 0, -90)
+	restoreFramePos(pill, "trackPillPos", "TOP", 0, -90)
 	pill:SetMovable(true)
 	pill:SetClampedToScreen(true)
 	pill:EnableMouse(true)
@@ -42,7 +61,10 @@ function ReminderPill:InitTrackPill()
 			self:StartMoving()
 		end
 	end)
-	pill:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+	pill:SetScript("OnDragStop", function(self)
+		self:StopMovingOrSizing()
+		saveFramePos(self, "trackPillPos")
+	end)
 
 	local icon = pill:CreateTexture(nil, "ARTWORK")
 	icon:SetSize(20, 20)
@@ -205,7 +227,7 @@ function ReminderPill:InitNudgeBar()
 	local Theme = LBB.Theme
 	local f = _G.CreateFrame("Frame", "LittleBuffBoyNudgeFrame", _G.UIParent)
 	f:SetSize(340, 220)
-	f:SetPoint("TOP", _G.UIParent, "TOP", 0, -135)
+	restoreFramePos(f, "nudgePos", "TOP", 0, -135)
 	f:SetMovable(true)
 	f:SetClampedToScreen(true)
 	f:EnableMouse(true)
@@ -214,7 +236,10 @@ function ReminderPill:InitNudgeBar()
 	Theme.ApplyPanel(f, Theme.Colors.bg, Theme.Colors.accent)
 
 	f:SetScript("OnDragStart", function(self) self:StartMoving() end)
-	f:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+	f:SetScript("OnDragStop", function(self)
+		self:StopMovingOrSizing()
+		saveFramePos(self, "nudgePos")
+	end)
 
 	local header = _G.CreateFrame("Frame", nil, f)
 	header:SetHeight(26)

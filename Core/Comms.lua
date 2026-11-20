@@ -330,6 +330,36 @@ function Comms:BroadcastLock(scope, key, buffID, casterName, locked, extraClass)
 	end
 end
 
+function Comms:BroadcastClassAll(casterName, familyID, locked)
+	local payload = table_concat({
+		"LOCK",
+		"CLASS_ALL",
+		escapeField(casterName or ""),
+		escapeField(familyID or ""),
+		escapeField(casterName or ""),
+		locked and "1" or "0",
+		"",
+	}, "|")
+	self:SendLBB(payload)
+	if not self:IsPallyPowerLoaded() and casterName then
+		local ppID = (familyID and LBB.Catalog.FAMILY_TO_PALLYPOWER_ID[familyID]) or 0
+		self:SendPLPWRMassAssign(casterName, ppID)
+	end
+end
+
+function Comms:BroadcastGroupAll(familyID, casterName, locked)
+	local payload = table_concat({
+		"LOCK",
+		"GROUP_ALL",
+		escapeField(familyID or ""),
+		escapeField(familyID or ""),
+		escapeField(casterName or ""),
+		locked and "1" or "0",
+		"",
+	}, "|")
+	self:SendLBB(payload)
+end
+
 function Comms:BroadcastTotem(subgroup, casterName, earth, fire, water, air, lockedMask)
 	local payload = table_concat({
 		"TOTEM",
@@ -389,6 +419,17 @@ function Comms:HandleLBBMessage(sender, payload, distribution)
 		elseif scope == "CLASS" then
 			if not self:IsPallyPowerLoaded() and casterName and key then
 				LBB.Assignments:SetClassBuff(casterName, key, buffID, locked)
+				LBB.Assignments:SaveToCharDB()
+				self:NotifyChange("LOCK", scope)
+			end
+		elseif scope == "CLASS_ALL" then
+			if not self:IsPallyPowerLoaded() and casterName then
+				LBB.Assignments:SetAllClassBuffs(casterName, buffID, locked)
+				self:NotifyChange("LOCK", scope)
+			end
+		elseif scope == "GROUP_ALL" then
+			if buffID then
+				LBB.Assignments:SetAllGroupBuffs(buffID, casterName, locked)
 				self:NotifyChange("LOCK", scope)
 			end
 		elseif scope == "NORMAL" then
@@ -396,6 +437,7 @@ function Comms:HandleLBBMessage(sender, payload, distribution)
 				local clsToken = fields[7]
 				if clsToken == "" then clsToken = nil end
 				LBB.Assignments:SetPaladinNormalOverride(casterName, key, clsToken, buffID, locked)
+				LBB.Assignments:SaveToCharDB()
 				self:NotifyChange("LOCK", scope)
 			end
 		elseif scope == "TARGET" then

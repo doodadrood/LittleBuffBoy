@@ -10,7 +10,7 @@ Options.frame = nil
 local function makeToggleRow(parent, y, labelText, getFn, setFn)
 	local Theme = LBB.Theme
 	local row = _G.CreateFrame("Frame", nil, parent)
-	row:SetSize(320, 24)
+	row:SetSize(336, 24)
 	row:SetPoint("TOPLEFT", parent, "TOPLEFT", 12, -y)
 
 	local lbl = Theme.CreateFontString(row, 11, "LEFT", Theme.Colors.text)
@@ -37,7 +37,7 @@ function Options:Init()
 	end
 	local Theme = LBB.Theme
 	local f = _G.CreateFrame("Frame", "LittleBuffBoyOptionsFrame", _G.UIParent)
-	f:SetSize(350, 386)
+	f:SetSize(366, 496)
 	f:SetPoint("CENTER", _G.UIParent, "CENTER", 0, 20)
 	f:SetMovable(true)
 	f:SetClampedToScreen(true)
@@ -87,6 +87,97 @@ function Options:Init()
 	))
 	y = y + 28
 
+	-- Buff Strip Scale stepper (0.7x - 1.4x)
+	local scaleRow = _G.CreateFrame("Frame", nil, f)
+	scaleRow:SetSize(336, 24)
+	scaleRow:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -y)
+	local scLbl = Theme.CreateFontString(scaleRow, 11, "LEFT", Theme.Colors.text)
+	scLbl:SetPoint("LEFT", scaleRow, "LEFT", 0, 0)
+	scLbl:SetText("Buff Strip Scale (0.7x - 1.4x)")
+	local scVal = Theme.CreateFontString(scaleRow, 11, "CENTER", Theme.Colors.accent)
+	scVal:SetSize(44, 20)
+	scVal:SetPoint("RIGHT", scaleRow, "RIGHT", -28, 0)
+	local function applyScale(delta)
+		local cur = (LBB.DB and LBB.DB.stripScale) or 1.0
+		local nextVal = math.floor(((cur + delta) * 10) + 0.5) / 10
+		if nextVal < 0.7 then nextVal = 0.7 end
+		if nextVal > 1.4 then nextVal = 1.4 end
+		LBB.DB.stripScale = nextVal
+		scVal:SetText(string.format("%.1fx", nextVal))
+		LBB:RefreshUI()
+	end
+	local btnScaleDown = Theme.CreateButton(scaleRow, "-", 24, 20, function() applyScale(-0.1) end)
+	btnScaleDown:SetPoint("RIGHT", scVal, "LEFT", -2, 0)
+	local btnScaleUp = Theme.CreateButton(scaleRow, "+", 24, 20, function() applyScale(0.1) end)
+	btnScaleUp:SetPoint("RIGHT", scaleRow, "RIGHT", 0, 0)
+	scaleRow._refresh = function()
+		scVal:SetText(string.format("%.1fx", (LBB.DB and LBB.DB.stripScale) or 1.0))
+	end
+	scaleRow._refresh()
+	table.insert(f._refreshables, scaleRow)
+	y = y + 28
+
+	-- Healthy Strip Behavior (Always Show / Fade 35% / Auto-Hide)
+	local healthyRow = _G.CreateFrame("Frame", nil, f)
+	healthyRow:SetSize(336, 24)
+	healthyRow:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -y)
+	local hLbl = Theme.CreateFontString(healthyRow, 11, "LEFT", Theme.Colors.text)
+	hLbl:SetPoint("LEFT", healthyRow, "LEFT", 0, 0)
+	hLbl:SetText("When All Buffs Healthy")
+	local healthyModes = {
+		{ id = "SHOW", label = "Always Show" },
+		{ id = "FADE", label = "Fade (35%)" },
+		{ id = "HIDE", label = "Auto-Hide" },
+	}
+	local hBtn = Theme.CreateButton(healthyRow, "Always Show", 110, 20, function(self)
+		local cur = (LBB.DB and LBB.DB.stripHealthyMode) or "SHOW"
+		local nextIdx = 1
+		for i, m in ipairs(healthyModes) do
+			if m.id == cur then
+				nextIdx = (i % #healthyModes) + 1
+				break
+			end
+		end
+		LBB.DB.stripHealthyMode = healthyModes[nextIdx].id
+		self._refresh()
+		LBB:RefreshUI()
+	end)
+	hBtn:SetPoint("RIGHT", healthyRow, "RIGHT", 0, 0)
+	hBtn._refresh = function()
+		local cur = (LBB.DB and LBB.DB.stripHealthyMode) or "SHOW"
+		for _, m in ipairs(healthyModes) do
+			if m.id == cur then
+				hBtn._label:SetText(m.label)
+				break
+			end
+		end
+	end
+	hBtn._refresh()
+	table.insert(f._refreshables, hBtn)
+	y = y + 28
+
+	table.insert(f._refreshables, makeToggleRow(f, y, "Show Smart Auto-Buff Tile",
+		function() return LBB.DB == nil or LBB.DB.showAutoBuffTile ~= false end,
+		function(v)
+			LBB.DB.showAutoBuffTile = v
+			LBB:RefreshUI()
+		end
+	))
+	y = y + 28
+
+	table.insert(f._refreshables, makeToggleRow(f, y, "Show Minimap Icon",
+		function() return LBB.MinimapButton and LBB.MinimapButton:IsShown() or (not (LBB.DB and LBB.DB.minimap and LBB.DB.minimap.hide)) end,
+		function(v)
+			if LBB.MinimapButton then
+				LBB.MinimapButton:SetShown(v)
+			elseif LBB.DB then
+				LBB.DB.minimap = LBB.DB.minimap or { minimapPos = 220 }
+				LBB.DB.minimap.hide = not v
+			end
+		end
+	))
+	y = y + 28
+
 	table.insert(f._refreshables, makeToggleRow(f, y, "Raid Frame Micro-Indicators",
 		function() return LBB.DB == nil or LBB.DB.showRaidIndicators ~= false end,
 		function(v)
@@ -119,7 +210,7 @@ function Options:Init()
 
 	-- Refresh Threshold cycle button
 	local threshRow = _G.CreateFrame("Frame", nil, f)
-	threshRow:SetSize(320, 24)
+	threshRow:SetSize(336, 24)
 	threshRow:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -y)
 	local tLbl = Theme.CreateFontString(threshRow, 11, "LEFT", Theme.Colors.text)
 	tLbl:SetPoint("LEFT", threshRow, "LEFT", 0, 0)
@@ -149,7 +240,7 @@ function Options:Init()
 
 	-- Preferred Tracking cycler
 	local trackRow = _G.CreateFrame("Frame", nil, f)
-	trackRow:SetSize(320, 24)
+	trackRow:SetSize(336, 24)
 	trackRow:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -y)
 	local trLbl = Theme.CreateFontString(trackRow, 11, "LEFT", Theme.Colors.text)
 	trLbl:SetPoint("LEFT", trackRow, "LEFT", 0, 0)
@@ -198,7 +289,7 @@ function Options:Init()
 	y = y + 28
 
 	local sealRow = _G.CreateFrame("Frame", nil, f)
-	sealRow:SetSize(320, 24)
+	sealRow:SetSize(336, 24)
 	sealRow:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -y)
 	local sLbl = Theme.CreateFontString(sealRow, 11, "LEFT", Theme.Colors.text)
 	sLbl:SetPoint("LEFT", sealRow, "LEFT", 0, 0)
