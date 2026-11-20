@@ -2,7 +2,7 @@
 ## Title: LittleBuffBoy |cff38bdf8(LBB)|r
 ## Notes: Lightweight all-class buff, totem, consumable, and minimap tracking coordinator for WoW: Forever with PallyPower interoperability.
 ## Author: doodadrood
-## Version: 0.2.0
+## Version: 0.3.0
 ## DefaultState: enabled
 ## OptionalDeps: PallyPower, LibDBIcon-1.0, OneForAll
 ## SavedVariables: LittleBuffBoyDB
