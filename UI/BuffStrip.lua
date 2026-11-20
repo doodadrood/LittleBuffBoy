@@ -32,6 +32,7 @@ local PAD = 4
 -- Blizzard Restricted Environment OnClick pre-script:
 -- Allows SecureActionButtonTemplate to rotate across eligible alive party/raid members (and @mouseover)
 -- DURING combat lockdown (where normal Lua SetAttribute is blocked)!
+-- Strictly zero table constructors (`{}`), zero `function` definitions, and RestrictedEnvironment globals only.
 local COMBAT_CLICK_PRE_SNIPPET = [[
 	if down then
 		self:SetAttribute("combat_had_down", true)
@@ -41,7 +42,7 @@ local COMBAT_CLICK_PRE_SNIPPET = [[
 			return
 		end
 	end
-	if not PlayerInCombat or not PlayerInCombat() then
+	if not PlayerInCombat() then
 		self:SetAttribute("combat_idx", 0)
 		return
 	end
@@ -49,32 +50,80 @@ local COMBAT_CLICK_PRE_SNIPPET = [[
 	if not list or list == "" then
 		return
 	end
-	if SecureCmdOptionParse then
-		local mo = SecureCmdOptionParse("[@mouseover,help,nodead] mouseover")
-		if mo and mo ~= "" then
+	if list == "player" then
+		self:SetAttribute("unit1", "player")
+		self:SetAttribute("unit2", "player")
+		return
+	end
+	local mo = SecureCmdOptionParse("[@mouseover,help,nodead] mouseover")
+	if mo and mo ~= "" then
+		if button == "RightButton" then
+			self:SetAttribute("unit2", mo)
+		else
 			self:SetAttribute("unit1", mo)
+		end
+		return
+	end
+	local count = 0
+	local firstValid = nil
+	local pos = 1
+	local len = strlen(list)
+	while pos <= len do
+		local comma = strfind(list, ",", pos, true)
+		local u
+		if comma then
+			u = strsub(list, pos, comma - 1)
+			pos = comma + 1
+		else
+			u = strsub(list, pos)
+			pos = len + 1
+		end
+		if u ~= "" then
+			local parsed = SecureCmdOptionParse("[@" .. u .. ",help,nodead] " .. u)
+			if parsed and parsed ~= "" then
+				count = count + 1
+				if not firstValid then
+					firstValid = u
+				end
+			end
+		end
+	end
+	if count > 0 then
+		if button == "RightButton" then
+			self:SetAttribute("unit2", firstValid)
 			return
 		end
-	end
-	local units = newtable and newtable() or {}
-	for u in list:gmatch("[^,]+") do
-		local okUnit = true
-		if SecureCmdOptionParse then
-			local parsed = SecureCmdOptionParse("[@" .. u .. ",help,nodead] " .. u)
-			okUnit = (parsed and parsed ~= "")
-		end
-		if okUnit then
-			units[#units + 1] = u
-		end
-	end
-	if #units > 0 then
 		local idx = (self:GetAttribute("combat_idx") or 0) + 1
-		if idx > #units then
+		if idx > count then
 			idx = 1
 		end
+		local chosen = firstValid
+		local seen = 0
+		pos = 1
+		while pos <= len do
+			local comma = strfind(list, ",", pos, true)
+			local u
+			if comma then
+				u = strsub(list, pos, comma - 1)
+				pos = comma + 1
+			else
+				u = strsub(list, pos)
+				pos = len + 1
+			end
+			if u ~= "" then
+				local parsed = SecureCmdOptionParse("[@" .. u .. ",help,nodead] " .. u)
+				if parsed and parsed ~= "" then
+					seen = seen + 1
+					if seen == idx then
+						chosen = u
+						break
+					end
+				end
+			end
+		end
 		self:SetAttribute("combat_idx", idx)
-		self:SetAttribute("unit1", units[idx])
-		self:SetAttribute("unit2", units[1])
+		self:SetAttribute("unit1", chosen)
+		self:SetAttribute("unit2", firstValid)
 	end
 ]]
 
@@ -82,18 +131,23 @@ function BuffStrip:WrapSecureButton(btn)
 	if not btn or btn._lbbWrapped then
 		return
 	end
-	if not self.secureHeader and _G.CreateFrame then
-		local ok, hdr = pcall(_G.CreateFrame, "Frame", "LittleBuffBoySecureHeader", _G.UIParent, "SecureHandlerBaseTemplate")
-		if ok and hdr then
-			self.secureHeader = hdr
+	LBB.Compat.RunOutOfCombat("wrap_secure_" .. tostring(btn:GetName() or btn), function()
+		if btn._lbbWrapped then
+			return
 		end
-	end
-	if self.secureHeader and _G.SecureHandlerWrapScript then
-		local ok = pcall(_G.SecureHandlerWrapScript, btn, "OnClick", self.secureHeader, COMBAT_CLICK_PRE_SNIPPET)
-		if ok then
-			btn._lbbWrapped = true
+		if not self.secureHeader and _G.CreateFrame then
+			local ok, hdr = pcall(_G.CreateFrame, "Frame", "LittleBuffBoySecureHeader", _G.UIParent, "SecureHandlerBaseTemplate")
+			if ok and hdr then
+				self.secureHeader = hdr
+			end
 		end
-	end
+		if self.secureHeader and _G.SecureHandlerWrapScript then
+			local ok = pcall(_G.SecureHandlerWrapScript, btn, "OnClick", self.secureHeader, COMBAT_CLICK_PRE_SNIPPET)
+			if ok then
+				btn._lbbWrapped = true
+			end
+		end
+	end)
 end
 
 local function savePosition(frame)

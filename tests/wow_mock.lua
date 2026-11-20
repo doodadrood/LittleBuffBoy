@@ -351,10 +351,33 @@ function Mock.New()
 		end
 		_G.SecureHandlerWrapScript = function(frame, script, _, preBody)
 			if frame and script == "OnClick" and type(preBody) == "string" then
+				-- Mirror Blizzard's RestrictedExecution.lua static checks!
+				if preBody:find("{", 1, true) or preBody:find("}", 1, true) then
+					error("RestrictedExecution.lua: Direct table creation is not permitted")
+				end
+				if preBody:find("%f[%a]function%f[%A]") then
+					error("RestrictedExecution.lua: Function definitions are not permitted")
+				end
 				local chunk, err = loadstring("local self, button, down = ...; " .. preBody)
 				if not chunk then
 					error("Invalid SecureHandler snippet: " .. tostring(err))
 				end
+				local restrictedEnv = {
+					PlayerInCombat = _G.PlayerInCombat,
+					SecureCmdOptionParse = _G.SecureCmdOptionParse,
+					strlen = string.len,
+					strfind = string.find,
+					strsub = string.sub,
+					strmatch = string.match,
+					gmatch = string.gmatch,
+					gsub = string.gsub,
+					tonumber = tonumber,
+					tostring = tostring,
+					type = type,
+					select = select,
+					newtable = _G.newtable,
+				}
+				setfenv(chunk, restrictedEnv)
 				frame._preClickSnippet = chunk
 			end
 		end
