@@ -298,26 +298,30 @@ local function solveDruids(roster, capabilitiesByCaster, assignments, preserveEx
 
 	local thornsCasters = sortCastersForFamily(filterKnowsFamily(druids, "THORNS"), "THORNS")
 	if #thornsCasters > 0 then
-		-- Prioritize explicit TANKS first, then Warriors / Druid tanks
-		local targets = {}
-		for _, m in ipairs(roster) do
-			if m.role == "TANK" then
-				table_insert(targets, m)
-			end
-		end
-		if #targets == 0 then
+		-- If a Druid already locked/assigned Thorns to the TANK role, skip redundant per-player tank assignments
+		local tankRoleEntry = assignments.GetRoleBuff and assignments:GetRoleBuff("THORNS", "TANK")
+		if not (tankRoleEntry and (tankRoleEntry.locked or tankRoleEntry.caster)) then
+			-- Prioritize explicit TANKS first, then Warriors / Druid tanks
+			local targets = {}
 			for _, m in ipairs(roster) do
-				if m.class == "WARRIOR" or (m.class == "PALADIN" and m.role == "TANK") then
+				if m.role == "TANK" or m.isMainTank then
 					table_insert(targets, m)
 				end
 			end
-		end
-		if #targets == 0 and #roster == 1 then
-			table_insert(targets, roster[1])
-		end
-		for idx, target in ipairs(targets) do
-			local caster = thornsCasters[((idx - 1) % #thornsCasters) + 1]
-			assignTargetIfUnlocked(assignments, "THORNS", target.name, caster.name, preserveExisting)
+			if #targets == 0 then
+				for _, m in ipairs(roster) do
+					if m.class == "WARRIOR" or (m.class == "PALADIN" and m.role == "TANK") then
+						table_insert(targets, m)
+					end
+				end
+			end
+			if #targets == 0 and #roster == 1 then
+				table_insert(targets, roster[1])
+			end
+			for idx, target in ipairs(targets) do
+				local caster = thornsCasters[((idx - 1) % #thornsCasters) + 1]
+				assignTargetIfUnlocked(assignments, "THORNS", target.name, caster.name, preserveExisting)
+			end
 		end
 	end
 end

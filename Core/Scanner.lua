@@ -226,6 +226,8 @@ function Scanner:EnsureUnitCache(unit, unitInfo)
 			paladinAuras = {},
 			righteousFury = nil,
 			seals = {},
+			personalByName = {},
+			weaponImbues = { mh = nil, oh = nil },
 			totems = {},
 			consumables = {},
 			wasDead = false,
@@ -233,6 +235,8 @@ function Scanner:EnsureUnitCache(unit, unitInfo)
 		}
 		self.auraCache[key] = cache
 	end
+	cache.personalByName = cache.personalByName or {}
+	cache.weaponImbues = cache.weaponImbues or { mh = nil, oh = nil }
 	return cache
 end
 
@@ -286,6 +290,81 @@ function Scanner:ApplyOptimisticCast(sid, sName, hintUnit, hintTargetName)
 		spellId = sid,
 		name = sName,
 	})
+	local personalOpt = (sid and Catalog.PERSONAL_SPELL_ID_TO_OPT and Catalog.PERSONAL_SPELL_ID_TO_OPT[sid])
+		or (sName and Catalog.PERSONAL_NAME_TO_OPT and Catalog.PERSONAL_NAME_TO_OPT[sName])
+		or nil
+	-- Also match dynamically-discovered personal self-buffs on the local player
+	local matchedPersonalSlot = nil
+	local pVec = LBB.Capabilities and LBB.Capabilities.playerVector
+	if pVec and pVec.personal then
+		for slotID, bucket in pairs(pVec.personal) do
+			for _, opt in ipairs(bucket.list or {}) do
+				if (sid and opt.allSpellIDs and opt.allSpellIDs[sid]) or (sName and opt.name == sName) then
+					personalOpt = personalOpt or opt
+					matchedPersonalSlot = Catalog.PERSONAL_SLOT_BY_ID and Catalog.PERSONAL_SLOT_BY_ID[slotID] or nil
+					break
+				end
+			end
+			if matchedPersonalSlot then
+				break
+			end
+		end
+	end
+
+	if personalOpt then
+		local pCache = self:EnsureUnitCache("player", playerMember)
+		local pName = sName or personalOpt.name
+		local cType = (matchedPersonalSlot and matchedPersonalSlot.checkType) or personalOpt.checkType or "AURA"
+		local pDur = personalOpt.duration or 1800
+		if cType == "WEAPON_MH" or cType == "WEAPON_OH" then
+			local mhEntry = pCache.weaponImbues.mh
+			local mhActive = mhEntry and mhEntry.present and (mhEntry.expirationTime or 0) > now
+			local mhCfg = LBB.Assignments and LBB.Assignments:GetPersonalSlot("SHAMAN_IMBUE_MH")
+			local ohCfg = LBB.Assignments and LBB.Assignments:GetPersonalSlot("SHAMAN_IMBUE_OH")
+			local targetHand = "mh"
+			if Compat.HasOffHandWeapon() then
+				if ohCfg and ohCfg.enabled and ohCfg.optionName == pName and not (mhCfg and mhCfg.enabled and mhCfg.optionName == pName and not mhActive) then
+					targetHand = "oh"
+				elseif mhActive then
+					targetHand = "oh"
+				end
+			end
+			pCache.weaponImbues[targetHand] = {
+				present = true,
+				name = pName,
+				expirationTime = now + pDur,
+				duration = pDur,
+				optimisticUntil = optUntil,
+				castInCombat = castInCombat,
+			}
+			if not famID then
+				return true
+			end
+		else
+			-- Clear mutually exclusive options in the same CHOICE slot if switching armors/shields/aspects
+			if matchedPersonalSlot and matchedPersonalSlot.mode == "CHOICE" then
+				local bucket = pVec and pVec.personal and pVec.personal[matchedPersonalSlot.slotID]
+				for _, opt in ipairs((bucket and bucket.list) or matchedPersonalSlot.options or {}) do
+					if opt.name and opt.name ~= pName then
+						pCache.personalByName[opt.name] = nil
+					end
+				end
+			end
+			pCache.personalByName[pName] = {
+				present = true,
+				spellId = sid,
+				name = pName,
+				expirationTime = pDur > 0 and (now + pDur) or 0,
+				duration = pDur,
+				optimisticUntil = optUntil,
+				castInCombat = castInCombat,
+			}
+			if not (famID or palAuraID or totemID or isRF or sealID) then
+				return true
+			end
+		end
+	end
+
 	if not (famID or palAuraID or totemID or isRF or sealID) then
 		return false
 	end
@@ -457,20 +536,7 @@ function Scanner:ScanUnit(unit, unitInfo)
 	local inCombat = Compat.InCombat()
 	local key = unitCacheKey(unit, unitInfo)
 
-	local cache = self.auraCache[key]
-	if not cache then
-		cache = {
-			families = {},
-			paladinAuras = {},
-			righteousFury = nil,
-			seals = {},
-			totems = {},
-			consumables = {},
-			wasDead = false,
-			battleRezzed = false,
-		}
-		self.auraCache[key] = cache
-	end
+	local cache = self:EnsureUnitCache(unit, unitInfo)
 
 	local isDead = Compat.UnitIsDeadOrGhost(unit)
 	if isDead then
@@ -479,6 +545,7 @@ function Scanner:ScanUnit(unit, unitInfo)
 		cache.paladinAuras = {}
 		cache.righteousFury = nil
 		cache.seals = {}
+		cache.personalByName = {}
 		cache.totems = {}
 		cache.wasDead = true
 		cache.battleRezzed = false
@@ -488,6 +555,8 @@ function Scanner:ScanUnit(unit, unitInfo)
 			paladinAuras = {},
 			righteousFury = nil,
 			seals = {},
+			personalByName = {},
+			weaponImbues = cache.weaponImbues,
 			totems = {},
 			consumables = cache.consumables,
 			restricted = false,
@@ -506,6 +575,8 @@ function Scanner:ScanUnit(unit, unitInfo)
 	local foundAuras = {}
 	local foundRF = nil
 	local foundSeals = {}
+	local foundPersonal = {}
+	local foundWeaponImbues = { mh = nil, oh = nil }
 	local foundTotems = {}
 	local foundConsumables = {}
 	local scanRestricted = false
@@ -576,6 +647,30 @@ function Scanner:ScanUnit(unit, unitInfo)
 				foundTotems[totemID] = true
 			end
 
+			-- Also index personal self-buffs by aura name (and catalog spellId -> name) so all-class personal buffs & dynamic Forever spells match cleanly
+			local pOpt = aura.spellId and LBB.Catalog.PERSONAL_SPELL_ID_TO_OPT and LBB.Catalog.PERSONAL_SPELL_ID_TO_OPT[aura.spellId] or nil
+			local pName = aura.name or (pOpt and pOpt.name) or nil
+			if pName then
+				local cachedP = cache.personalByName and cache.personalByName[pName]
+				local pExp = exp
+				local pDur = dur
+				if (pExp == nil or pDur == nil) and cachedP then
+					pExp = cachedP.expirationTime
+					pDur = cachedP.duration
+				end
+				local pEntry = {
+					present = true,
+					spellId = aura.spellId,
+					name = pName,
+					expirationTime = pExp or 0,
+					duration = pDur or (pOpt and pOpt.duration) or 0,
+				}
+				foundPersonal[pName] = pEntry
+				if pOpt and pOpt.name and pOpt.name ~= pName then
+					foundPersonal[pOpt.name] = pEntry
+				end
+			end
+
 			local cid = matchConsumable(aura)
 			if cid then
 				foundConsumables[cid] = {
@@ -588,9 +683,25 @@ function Scanner:ScanUnit(unit, unitInfo)
 		end
 	end
 
-	-- Weapon enchant check (available for player)
+	-- Weapon enchant check (available for player: Consumable Weapon Oil/Stone + Shaman MH/OH Weapon Imbues)
 	if unit == "player" then
-		local hasMain, mainExp, _, _, hasOff, offExp = Compat.GetWeaponEnchantInfo()
+		local hasMain, mainExp, _, mainID, hasOff, offExp, _, offID = Compat.GetWeaponEnchantInfo()
+		if hasMain then
+			foundWeaponImbues.mh = {
+				present = true,
+				enchantID = mainID,
+				expirationTime = now + ((mainExp or 0) / 1000),
+				duration = (mainExp or 0) / 1000,
+			}
+		end
+		if hasOff then
+			foundWeaponImbues.oh = {
+				present = true,
+				enchantID = offID,
+				expirationTime = now + ((offExp or 0) / 1000),
+				duration = (offExp or 0) / 1000,
+			}
+		end
 		if hasMain or hasOff then
 			local remMs = math_max(hasMain and (mainExp or 0) or 0, hasOff and (offExp or 0) or 0)
 			foundConsumables.WEAPON_OIL = {
@@ -603,34 +714,44 @@ function Scanner:ScanUnit(unit, unitInfo)
 	end
 
 	if not scanRestricted then
-		-- During combat, preserve buffs explicitly cast by the player during this combat while unexpired
-		-- (handles Midnight secret/hidden combat-applied auras and the UNIT_SPELLCAST_SUCCEEDED -> UNIT_AURA window).
-		-- When combat ends (`not inCombat`), live C_UnitAuras reconciles everything authoritatively!
-		if inCombat then
-			local function keepInCombat(entry)
-				if not entry then
-					return false
-				end
-				if entry.optimisticUntil and now < entry.optimisticUntil then
-					return true
-				end
-				if entry.castInCombat and (entry.expirationTime == 0 or (entry.expirationTime or 0) > now) then
-					return true
-				end
+		-- Preserve short-lived optimistic casts (`optimisticUntil`, covering the ~100ms UNIT_SPELLCAST_SUCCEEDED -> UNIT_AURA / GetWeaponEnchantInfo server round-trip)
+		-- and, while in combat, preserve `castInCombat` entries in case Midnight hides combat-applied aura fields.
+		local function keepOptimistic(entry)
+			if not entry then
 				return false
 			end
-			for famID, entry in pairs(cache.families) do
-				if not foundFamilies[famID] and keepInCombat(entry) then
-					foundFamilies[famID] = entry
-				end
+			if entry.optimisticUntil and now < entry.optimisticUntil then
+				return true
 			end
-			if not foundRF and keepInCombat(cache.righteousFury) then
-				foundRF = cache.righteousFury
+			if inCombat and entry.castInCombat and (entry.expirationTime == 0 or (entry.expirationTime or 0) > now) then
+				return true
 			end
-			for sid, entry in pairs(cache.seals or {}) do
-				if not foundSeals[sid] and keepInCombat(entry) then
-					foundSeals[sid] = entry
-				end
+			return false
+		end
+		for famID, entry in pairs(cache.families) do
+			if not foundFamilies[famID] and keepOptimistic(entry) then
+				foundFamilies[famID] = entry
+			end
+		end
+		if not foundRF and keepOptimistic(cache.righteousFury) then
+			foundRF = cache.righteousFury
+		end
+		for sid, entry in pairs(cache.seals or {}) do
+			if not foundSeals[sid] and keepOptimistic(entry) then
+				foundSeals[sid] = entry
+			end
+		end
+		for pName, entry in pairs(cache.personalByName or {}) do
+			if not foundPersonal[pName] and keepOptimistic(entry) then
+				foundPersonal[pName] = entry
+			end
+		end
+		if unit == "player" and cache.weaponImbues then
+			if not foundWeaponImbues.mh and keepOptimistic(cache.weaponImbues.mh) then
+				foundWeaponImbues.mh = cache.weaponImbues.mh
+			end
+			if not foundWeaponImbues.oh and keepOptimistic(cache.weaponImbues.oh) then
+				foundWeaponImbues.oh = cache.weaponImbues.oh
 			end
 		end
 		-- Full readable scan: update cache authoritatively
@@ -638,6 +759,10 @@ function Scanner:ScanUnit(unit, unitInfo)
 		cache.paladinAuras = foundAuras
 		cache.righteousFury = foundRF
 		cache.seals = foundSeals
+		cache.personalByName = foundPersonal
+		if unit == "player" then
+			cache.weaponImbues = foundWeaponImbues
+		end
 		cache.totems = foundTotems
 		cache.consumables = foundConsumables
 		if next(foundFamilies) ~= nil then
@@ -649,6 +774,8 @@ function Scanner:ScanUnit(unit, unitInfo)
 			paladinAuras = foundAuras,
 			righteousFury = foundRF,
 			seals = foundSeals,
+			personalByName = foundPersonal,
+			weaponImbues = foundWeaponImbues,
 			totems = foundTotems,
 			consumables = foundConsumables,
 			restricted = false,
@@ -688,6 +815,29 @@ function Scanner:ScanUnit(unit, unitInfo)
 		cache.seals[sid] = entry
 	end
 
+	local mergedPersonal = {}
+	for pName, entry in pairs(cache.personalByName or {}) do
+		if entry.expirationTime == 0 or entry.expirationTime > now then
+			mergedPersonal[pName] = entry
+		end
+	end
+	for pName, entry in pairs(foundPersonal) do
+		mergedPersonal[pName] = entry
+		cache.personalByName[pName] = entry
+	end
+
+	local mergedImbues = { mh = foundWeaponImbues.mh, oh = foundWeaponImbues.oh }
+	if unit == "player" and cache.weaponImbues then
+		if not mergedImbues.mh and cache.weaponImbues.mh and (cache.weaponImbues.mh.expirationTime == 0 or cache.weaponImbues.mh.expirationTime > now) then
+			mergedImbues.mh = cache.weaponImbues.mh
+		end
+		if not mergedImbues.oh and cache.weaponImbues.oh and (cache.weaponImbues.oh.expirationTime == 0 or cache.weaponImbues.oh.expirationTime > now) then
+			mergedImbues.oh = cache.weaponImbues.oh
+		end
+		if foundWeaponImbues.mh then cache.weaponImbues.mh = foundWeaponImbues.mh end
+		if foundWeaponImbues.oh then cache.weaponImbues.oh = foundWeaponImbues.oh end
+	end
+
 	local mergedConsumables = {}
 	for cid, entry in pairs(cache.consumables) do
 		if entry.expirationTime == 0 or entry.expirationTime > now then
@@ -721,6 +871,8 @@ function Scanner:ScanUnit(unit, unitInfo)
 		paladinAuras = mergedAuras,
 		righteousFury = mergedRF,
 		seals = mergedSeals,
+		personalByName = mergedPersonal,
+		weaponImbues = mergedImbues,
 		totems = mergedTotems,
 		consumables = mergedConsumables,
 		restricted = true,
@@ -754,7 +906,15 @@ local function collectDutyTargets(duty, roster)
 	local Catalog = LBB.Catalog
 	local targets = {}
 
-	if duty.kind == "PALADIN_AURA" or duty.kind == "SHAMAN_TOTEM" or duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL" then
+	if duty.kind == "PALADIN_AURA" or duty.kind == "SHAMAN_TOTEM" or duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL" or duty.kind == "PERSONAL_BUFF" then
+		if duty.kind == "PERSONAL_BUFF" then
+			if duty.requiresPet and (not LBB.Compat.UnitExists("pet") or LBB.Compat.UnitIsDeadOrGhost("pet")) then
+				return targets
+			end
+			if duty.checkType == "WEAPON_OH" and not LBB.Compat.HasOffHandWeapon() then
+				return targets
+			end
+		end
 		for _, m in ipairs(roster) do
 			if m.name == duty.caster then
 				table_insert(targets, m)
@@ -811,8 +971,20 @@ local function collectDutyTargets(duty, roster)
 		for _, tName in ipairs(duty.targets or {}) do
 			allowedNames[tName] = true
 		end
+		local roleList = duty.roles or {}
+		local seen = {}
 		for _, m in ipairs(roster) do
-			if allowedNames[m.name] then
+			local matched = allowedNames[m.name] == true
+			if not matched and #roleList > 0 then
+				for _, rKey in ipairs(roleList) do
+					if Catalog.MatchesRoleFilter(rKey, m) then
+						matched = true
+						break
+					end
+				end
+			end
+			if matched and not seen[m.name] then
+				seen[m.name] = true
 				table_insert(targets, m)
 			end
 		end
@@ -860,6 +1032,19 @@ function Scanner:EvaluateDuty(duty, roster, options)
 		singleSpellName = (known and known.name) or (def and def.name)
 		singleSpellID = (known and known.spellID) or (def and def.ranks and def.ranks[1])
 		icon = (known and known.icon) or (def and def.icon)
+	elseif duty.kind == "PERSONAL_BUFF" then
+		local slotBucket = playerVec and playerVec.personal and duty.slotID and playerVec.personal[duty.slotID]
+		local known = slotBucket and duty.optionID and slotBucket.byID[duty.optionID]
+		singleSpellName = (known and known.name) or duty.spellName
+		singleSpellID = (known and known.spellID) or duty.spellID
+		icon = (known and known.icon) or duty.icon or 134400
+		if (duty.checkType or "AURA") == "AURA" and not duty.isPermanentToggle then
+			nativeSpellIDs = (known and known.allSpellIDs) or duty.allSpellIDs or (singleSpellID and { [singleSpellID] = true }) or {}
+		end
+		local dDur = duty.defaultDuration or 1800
+		if dDur > 0 and dDur <= 120 then
+			refreshThreshold = math_min(refreshThreshold, math_max(6, math.floor(dDur * 0.25)))
+		end
 	elseif fam then
 		local known = playerVec and playerVec.buffs and playerVec.buffs[duty.familyID]
 		singleSpellName = (known and known.bestSingleName) or fam.name
@@ -894,7 +1079,7 @@ function Scanner:EvaluateDuty(duty, roster, options)
 				totalEligible = totalEligible + 1
 
 				local inRange
-				if unit == "player" or duty.kind == "PALADIN_AURA" or duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL" or duty.kind == "SHAMAN_TOTEM" or duty.familyID == "BATTLE_SHOUT" then
+				if unit == "player" or duty.kind == "PALADIN_AURA" or duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL" or duty.kind == "PERSONAL_BUFF" or duty.kind == "SHAMAN_TOTEM" or duty.familyID == "BATTLE_SHOUT" then
 					inRange = true
 				else
 					inRange = Compat.IsSpellInRange(singleSpellName, unit, singleSpellID)
@@ -919,6 +1104,30 @@ function Scanner:EvaluateDuty(duty, roster, options)
 					if s and s.present then
 						present = true
 						remaining = self:GetRemainingSeconds(s, now)
+					end
+				elseif duty.kind == "PERSONAL_BUFF" then
+					local cType = duty.checkType or "AURA"
+					if cType == "WEAPON_MH" or cType == "WEAPON_OH" then
+						-- Weapon enchant check runs on "player" (even if roster unit in a raid is "raidN")
+						local wScan = (unit == "player") and scan or self:ScanUnit("player")
+						local imb = nil
+						if wScan.weaponImbues then
+							if cType == "WEAPON_OH" then
+								imb = wScan.weaponImbues.oh
+							else
+								imb = wScan.weaponImbues.mh
+							end
+						end
+						if imb and imb.present then
+							present = true
+							remaining = self:GetRemainingSeconds(imb, now)
+						end
+					else
+						local pEntry = singleSpellName and scan.personalByName and scan.personalByName[singleSpellName]
+						if pEntry and pEntry.present then
+							present = true
+							remaining = self:GetRemainingSeconds(pEntry, now)
+						end
 					end
 				elseif duty.kind == "SHAMAN_TOTEM" then
 					present = scan.totems[duty.totemID] == true
@@ -1160,6 +1369,8 @@ local function dutyAutoPriority(duty, eval)
 			return 110
 		elseif duty.kind == "SHAMAN_TOTEM" or duty.familyID == "BATTLE_SHOUT" then
 			return 100
+		elseif duty.kind == "PERSONAL_BUFF" then
+			return 98
 		elseif duty.kind == "PALADIN_SEAL" then
 			return 95
 		end
@@ -1211,7 +1422,7 @@ local function dutyCombatStagingScore(duty, eval)
 	if not ct then
 		return 0
 	end
-	if duty.kind == "PALADIN_AURA" and eval.missingCount == 0 then
+	if (duty.kind == "PALADIN_AURA" or (duty.kind == "PERSONAL_BUFF" and duty.isPermanentToggle)) and eval.missingCount == 0 then
 		return 1
 	end
 	local inRangeBonus = (ct.inRange ~= false) and 10000 or 100
@@ -1307,7 +1518,19 @@ function Scanner:GetBestAutoBuffAction(duties, roster, options)
 
 	local function isSelfOnlyDuty(duty)
 		local k = duty.kind
-		return k == "PALADIN_AURA" or k == "SHAMAN_TOTEM" or k == "RIGHTEOUS_FURY" or k == "PALADIN_SEAL" or duty.familyID == "BATTLE_SHOUT"
+		return k == "PALADIN_AURA"
+			or k == "SHAMAN_TOTEM"
+			or k == "RIGHTEOUS_FURY"
+			or k == "PALADIN_SEAL"
+			or k == "PERSONAL_BUFF"
+			or duty.familyID == "BATTLE_SHOUT"
+	end
+
+	local function shouldSkipActiveToggle(duty, eval)
+		if eval.missingCount ~= 0 or #allEvals <= 1 then
+			return false
+		end
+		return duty.kind == "PALADIN_AURA" or (duty.kind == "PERSONAL_BUFF" and duty.isPermanentToggle)
 	end
 
 	-- Build two-pass multi-duty Left-Click combat_queue (`spell|unit|selfFlag;...`):
@@ -1332,7 +1555,7 @@ function Scanner:GetBestAutoBuffAction(duties, roster, options)
 		for _, item in ipairs(allEvals) do
 			local duty = item.duty
 			local eval = item.eval
-			local skipActiveAura = (duty.kind == "PALADIN_AURA" and eval.missingCount == 0 and #allEvals > 1)
+			local skipActiveAura = shouldSkipActiveToggle(duty, eval)
 			if not skipActiveAura and eval.singleSpellName and eval.singleSpellName ~= "" then
 				if isSelfOnlyDuty(duty) then
 					local needsNow = (eval.needCount or 0) > 0
@@ -1371,7 +1594,7 @@ function Scanner:GetBestAutoBuffAction(duties, roster, options)
 	for _, item in ipairs(allEvals) do
 		local duty = item.duty
 		local eval = item.eval
-		local skipActiveAura = (duty.kind == "PALADIN_AURA" and eval.missingCount == 0 and #allEvals > 1)
+		local skipActiveAura = shouldSkipActiveToggle(duty, eval)
 		if not skipActiveAura then
 			if isSelfOnlyDuty(duty) then
 				addGroupEntry(eval.singleSpellName, "player", true)
@@ -1500,6 +1723,11 @@ function Scanner:BuildReadinessReport(roster, assignments)
 	end
 	for _, tMap in pairs(assignments.targetBuffs or {}) do
 		for _, e in pairs(tMap) do
+			addCaster(e.caster)
+		end
+	end
+	for _, rMap in pairs(assignments.roleBuffs or {}) do
+		for _, e in pairs(rMap) do
 			addCaster(e.caster)
 		end
 	end

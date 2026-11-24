@@ -13,7 +13,7 @@ local table_sort = table.sort
 local table_concat = table.concat
 
 MatrixFrame.frame = nil
-MatrixFrame.activeTab = "BUFFS" -- "BUFFS", "TOTEMS", "CONSUMABLES"
+MatrixFrame.activeTab = "BUFFS" -- "BUFFS", "ROLES", "SELF", "TOTEMS", "CONSUMABLES"
 MatrixFrame.cells = {}
 MatrixFrame.btnPool = {}
 MatrixFrame.btnUsed = 0
@@ -31,10 +31,15 @@ local function collectCastersForFamily(familyID)
 	local list = {}
 	local seen = {}
 	for _, m in ipairs(LBB.Assignments.roster) do
-		if m.class == fam.class and not seen[m.name] then
+		if m.class == fam.class and m.name and not seen[m.name] then
 			seen[m.name] = true
 			table_insert(list, m.name)
 		end
+	end
+	local pVec = LBB.Capabilities and LBB.Capabilities:GetPlayerVector()
+	if pVec and pVec.class == fam.class and pVec.name and not seen[pVec.name] then
+		seen[pVec.name] = true
+		table_insert(list, pVec.name)
 	end
 	table_sort(list)
 	return list
@@ -151,9 +156,11 @@ function MatrixFrame:Init()
 	tabBar:SetPoint("TOPRIGHT", header, "BOTTOMRIGHT", -8, -6)
 
 	local tabs = {
-		{ id = "BUFFS",       label = "Raid Buffs & Blessings", w = 165 },
-		{ id = "TOTEMS",      label = "Shaman Totems",          w = 120 },
-		{ id = "CONSUMABLES", label = "Consumables",            w = 110 },
+		{ id = "BUFFS",       label = "Raid & Blessings",    w = 132 },
+		{ id = "ROLES",       label = "Role & Target Buffs", w = 146 },
+		{ id = "SELF",        label = "My Self Buffs",       w = 114 },
+		{ id = "TOTEMS",      label = "Shaman Totems",       w = 116 },
+		{ id = "CONSUMABLES", label = "Consumables",         w = 104 },
 	}
 	f._tabBtns = {}
 	local xOff = 0
@@ -251,6 +258,17 @@ function MatrixFrame:Toggle()
 		self:Refresh()
 		self.frame:Show()
 	end
+end
+
+function MatrixFrame:OpenTab(tabID)
+	if not self.frame then
+		self:Init()
+	end
+	if tabID then
+		self.activeTab = tabID
+	end
+	self:Refresh()
+	self.frame:Show()
 end
 
 function MatrixFrame:ClearContentWidgets()
@@ -723,11 +741,229 @@ function MatrixFrame:BuildPaladinSealMenu()
 				checked = (selfCfg.trackSeal and selfCfg.sealID == sealEntry.id),
 				onClick = function()
 					LBB.Assignments:SetSelectedSeal(sRef)
+					LBB.Assignments:SaveToCharDB()
 					LBB:RefreshUI()
 				end,
 			})
 		end
 	end
+	return items
+end
+
+function MatrixFrame:BuildPersonalSlotMenu(slotDef)
+	local vec = LBB.Capabilities and LBB.Capabilities:GetPlayerVector()
+	local slotBucket = vec and vec.personal and vec.personal[slotDef.slotID] or nil
+	local slotCfg = LBB.Assignments:GetPersonalSlot(slotDef.slotID)
+	local Theme = LBB.Theme
+
+	local items = {
+		{ isTitle = true, text = "Select " .. (slotDef.label or slotDef.slotID) .. " (Self)" },
+		{
+			text = "Off (Do Not Track)",
+			color = Theme.Colors.danger,
+			checked = not (slotCfg and slotCfg.enabled),
+			onClick = function()
+				LBB.Assignments:SetPersonalChoice(slotDef.slotID, nil)
+				LBB.Assignments:SaveToCharDB()
+				LBB:RefreshUI()
+			end,
+		},
+		{ isSeparator = true },
+	}
+
+	local opts = (slotBucket and slotBucket.list) or {}
+	if #opts == 0 then
+		table_insert(items, { isTitle = true, text = "No spells learned yet", color = Theme.Colors.muted })
+	else
+		for _, optEntry in ipairs(opts) do
+			local oRef = optEntry
+			table_insert(items, {
+				text = optEntry.name,
+				rightText = optEntry.shortName or "",
+				checked = (slotCfg and slotCfg.enabled and (slotCfg.optionID == optEntry.id or slotCfg.optionName == optEntry.name)),
+				onClick = function()
+					LBB.Assignments:SetPersonalChoice(slotDef.slotID, oRef)
+					LBB.Assignments:SaveToCharDB()
+					LBB:RefreshUI()
+				end,
+			})
+		end
+	end
+	return items
+end
+
+function MatrixFrame:BuildRoleBuffMenu(famID, roleKey, casters, applyFn)
+	local Catalog = LBB.Catalog
+	local Theme = LBB.Theme
+	local fam = Catalog.GetFamily(famID)
+	local rInfo = Catalog.ROLE_INFO[roleKey]
+	local cur = LBB.Assignments:GetRoleBuff(famID, roleKey)
+	local curCaster = cur and cur.caster or nil
+	local curLocked = cur and cur.locked or false
+	local pVec = LBB.Capabilities and LBB.Capabilities:GetPlayerVector()
+
+	local items = {
+		{ isTitle = true, text = string.format("%s -> %s", fam and fam.name or famID, rInfo and rInfo.name or roleKey) },
+	}
+	if #casters == 0 then
+		table_insert(items, { isTitle = true, text = "No " .. (fam and fam.class or "") .. " in roster", color = Theme.Colors.muted })
+	else
+		for _, cName in ipairs(casters) do
+			local vec = LBB.Capabilities:GetPeerVector(cName)
+			local b = vec and vec.buffs and vec.buffs[famID]
+			local tags = {}
+			if pVec and pVec.name == cName then
+				table_insert(tags, "You")
+			end
+			if b and b.talentRank and b.talentRank > 0 then
+				table_insert(tags, "T" .. tostring(b.talentRank))
+			end
+			local casterRef = cName
+			table_insert(items, {
+				text = Theme.ColorizeName(cName, fam.class),
+				rightText = table_concat(tags, " "),
+				rightColor = Theme.Colors.accent,
+				checked = (curCaster == cName),
+				onClick = function()
+					applyFn(casterRef, true)
+				end,
+			})
+		end
+	end
+
+	table_insert(items, { isSeparator = true })
+	table_insert(items, {
+		text = "Clear Role Assignment",
+		color = Theme.Colors.danger,
+		checked = (curCaster == nil),
+		onClick = function()
+			applyFn(nil, true)
+		end,
+	})
+	table_insert(items, {
+		text = curLocked and "Unlock Cell" or "Lock Cell",
+		color = Theme.Colors.locked,
+		onClick = function()
+			applyFn(curCaster, not curLocked)
+		end,
+	})
+	return items
+end
+
+function MatrixFrame:BuildTargetPlayersMenu(famID, casters)
+	local Catalog = LBB.Catalog
+	local Theme = LBB.Theme
+	local Assignments = LBB.Assignments
+	local fam = Catalog.GetFamily(famID)
+
+	local items = {
+		{ isTitle = true, text = (fam and fam.name or famID) .. " - Specific Players" },
+	}
+
+	local sortedMembers = {}
+	for _, m in ipairs(Assignments.roster) do
+		table_insert(sortedMembers, m)
+	end
+	table_sort(sortedMembers, function(a, b)
+		local aTank = Catalog.MatchesRoleFilter("TANK", a)
+		local bTank = Catalog.MatchesRoleFilter("TANK", b)
+		if aTank ~= bTank then
+			return aTank and not bTank
+		end
+		local aHeal = Catalog.MatchesRoleFilter("HEALER", a)
+		local bHeal = Catalog.MatchesRoleFilter("HEALER", b)
+		if aHeal ~= bHeal then
+			return aHeal and not bHeal
+		end
+		return (a.name or "") < (b.name or "")
+	end)
+
+	if #sortedMembers == 0 then
+		table_insert(items, { isTitle = true, text = "No players in roster", color = Theme.Colors.muted })
+		return items
+	end
+
+	local anyAssigned = false
+	local maxShow = math.min(#sortedMembers, 18)
+	for i = 1, maxShow do
+		local m = sortedMembers[i]
+		local targetName = m.name
+		local cur = Assignments:GetTargetBuff(famID, targetName)
+		local curCaster = cur and cur.caster or nil
+		if curCaster then
+			anyAssigned = true
+		end
+
+		local roleBadge = ""
+		if Catalog.MatchesRoleFilter("TANK", m) then
+			roleBadge = "[Tank] "
+		elseif Catalog.MatchesRoleFilter("HEALER", m) then
+			roleBadge = "[Heal] "
+		end
+
+		local sub = {
+			{ isTitle = true, text = (fam and fam.shortName or famID) .. " -> " .. targetName },
+			{
+				text = "Unassigned (Use Role Rule)",
+				color = Theme.Colors.muted,
+				checked = (curCaster == nil),
+				onClick = function()
+					Assignments:SetTargetBuff(famID, targetName, nil, false)
+					Assignments:SaveToCharDB()
+					LBB.Comms:BroadcastLock("TARGET", targetName, famID, nil, false)
+					LBB:RefreshUI()
+				end,
+			},
+			{ isSeparator = true },
+		}
+
+		if #casters == 0 then
+			table_insert(sub, { isTitle = true, text = "No " .. (fam and fam.class or "") .. " available", color = Theme.Colors.muted })
+		else
+			for _, cName in ipairs(casters) do
+				local cRef = cName
+				table_insert(sub, {
+					text = Theme.ColorizeName(cName, fam.class),
+					checked = (curCaster == cName),
+					onClick = function()
+						Assignments:SetTargetBuff(famID, targetName, cRef, true)
+						Assignments:SaveToCharDB()
+						LBB.Comms:BroadcastLock("TARGET", targetName, famID, cRef, true)
+						LBB:RefreshUI()
+					end,
+				})
+			end
+		end
+
+		table_insert(items, {
+			text = roleBadge .. Theme.ColorizeName(targetName, m.class),
+			rightText = curCaster and (shortDisplayName(curCaster) .. " >") or "-- >",
+			rightColor = curCaster and Theme.Colors.accent or Theme.Colors.muted,
+			submenu = sub,
+		})
+	end
+
+	if anyAssigned then
+		table_insert(items, { isSeparator = true })
+		table_insert(items, {
+			text = "Clear All Specific Players",
+			color = Theme.Colors.danger,
+			onClick = function()
+				local tMap = Assignments.targetBuffs[famID] or {}
+				local names = {}
+				for tName in pairs(tMap) do
+					table_insert(names, tName)
+				end
+				for _, tName in ipairs(names) do
+					Assignments:SetTargetBuff(famID, tName, nil, false)
+					LBB.Comms:BroadcastLock("TARGET", tName, famID, nil, false)
+				end
+				Assignments:SaveToCharDB()
+				LBB:RefreshUI()
+			end,
+		})
+	end
+
 	return items
 end
 
@@ -1018,10 +1254,40 @@ function MatrixFrame:RenderBuffsTab(content)
 		end
 	end
 
-	-- Section C: Local Paladin Personal Self-Buff Controls (Righteous Fury & Seal)
+	-- Section C: All-Class Personal Self-Buff Quick Bar (when vertical space allows; otherwise 1-click tab shortcut)
+	if y <= 316 then
+		self:RenderSelfBuffsInline(content, y + 6)
+	else
+		local moreBtn = makeCell(
+			content,
+			580,
+			4,
+			130,
+			18,
+			"My Self Buffs ->",
+			false,
+			Theme.Colors.header,
+			function()
+				self:OpenTab("SELF")
+			end,
+			nil,
+			"Open the My Self Buffs tab to configure your class personal buffs"
+		)
+		table_insert(self.cells, moreBtn)
+	end
+end
+
+function MatrixFrame:RenderSelfBuffsInline(content, y)
+	local Theme = LBB.Theme
+	local Assignments = LBB.Assignments
+	local Catalog = LBB.Catalog
+	local ppYield = LBB.Comms:IsPallyPowerLoaded()
 	local pVec = LBB.Capabilities and LBB.Capabilities:GetPlayerVector()
-	if pVec and pVec.class == "PALADIN" then
-		y = y + 6
+	if not pVec then
+		return
+	end
+
+	if pVec.class == "PALADIN" then
 		local selfCfg = Assignments:GetPaladinSelfConfig()
 		local selfLbl = self:AcquireLabel(content, 10, "LEFT", Theme.Colors.accent)
 		selfLbl:SetPoint("TOPLEFT", content, "TOPLEFT", 10, -y - 4)
@@ -1045,9 +1311,14 @@ function MatrixFrame:RenderBuffsTab(content)
 				rfTxt,
 				selfCfg.trackRF,
 				Theme.Colors.header,
-				function()
+				function(_, mouseBtn)
 					if not rfKnown then return end
-					Assignments:SetRighteousFuryEnabled(not selfCfg.trackRF)
+					if mouseBtn == "RightButton" then
+						Assignments:SetRighteousFuryEnabled(false)
+					else
+						Assignments:SetRighteousFuryEnabled(not selfCfg.trackRF)
+					end
+					Assignments:SaveToCharDB()
 					LBB:RefreshUI()
 				end,
 				nil,
@@ -1065,14 +1336,557 @@ function MatrixFrame:RenderBuffsTab(content)
 				sealLabel .. "  |cff38bdf8v|r",
 				selfCfg.trackSeal,
 				Theme.Colors.header,
-				function(btnSelf)
-					Theme.ShowDropdownMenu(btnSelf, MatrixFrame:BuildPaladinSealMenu())
+				function(btnSelf, mouseBtn)
+					if mouseBtn == "RightButton" then
+						Assignments:SetSelectedSeal(nil)
+						Assignments:SaveToCharDB()
+						LBB:RefreshUI()
+					else
+						Theme.ShowDropdownMenu(btnSelf, MatrixFrame:BuildPaladinSealMenu())
+					end
 				end,
 				nil,
 				"Pick your active Paladin Seal (supports Forever Seal of Fury & native combat timer)"
 			)
 			table_insert(self.cells, sealBtn)
 		end
+		return
+	end
+
+	local slots = Catalog.PERSONAL_SLOTS and Catalog.PERSONAL_SLOTS[pVec.class] or nil
+	if not slots or #slots == 0 then
+		return
+	end
+
+	local selfLbl = self:AcquireLabel(content, 10, "LEFT", Theme.Colors.accent)
+	selfLbl:SetPoint("TOPLEFT", content, "TOPLEFT", 10, -y - 4)
+	selfLbl:SetText("My Self Buffs:")
+
+	local availW = 608
+	local gap = 6
+	local btnW = math.min(205, math.floor((availW - (#slots - 1) * gap) / #slots))
+	local x = 100
+
+	for _, slotDef in ipairs(slots) do
+		local sDef = slotDef
+		local slotBucket = pVec.personal and pVec.personal[sDef.slotID] or nil
+		local learnedList = (slotBucket and slotBucket.list) or {}
+		local slotCfg = Assignments:GetPersonalSlot(sDef.slotID)
+		local enabled = slotCfg and slotCfg.enabled and true or false
+
+		if sDef.mode == "TOGGLE" then
+			local opt = learnedList[1]
+			local txt = opt
+				and (sDef.label .. ": " .. (enabled and "|cff34d399ON|r" or "|cff94a3b8OFF|r"))
+				or ("|cff64748b" .. sDef.label .. " (n/a)|r")
+			local btn = makeCell(
+				content,
+				x,
+				y,
+				btnW,
+				22,
+				txt,
+				enabled,
+				Theme.Colors.header,
+				function(_, mouseBtn)
+					if not opt then return end
+					local nextState = (mouseBtn == "RightButton") and false or (not enabled)
+					Assignments:SetPersonalToggle(sDef.slotID, nextState, opt)
+					Assignments:SaveToCharDB()
+					LBB:RefreshUI()
+				end,
+				nil,
+				sDef.label .. (opt and (": Left-Click to toggle Buff Strip tracking") or " (Not yet learned in spellbook)")
+			)
+			table_insert(self.cells, btn)
+		else
+			local chosenShort = "Off"
+			if enabled and slotCfg.optionName then
+				local catOpt = (slotCfg.optionID and Catalog.PERSONAL_OPT_BY_ID[slotCfg.optionID])
+					or Catalog.PERSONAL_NAME_TO_OPT[slotCfg.optionName]
+				chosenShort = (catOpt and catOpt.shortName) or shortDisplayName(slotCfg.optionName)
+			end
+			local txt = string.format("%s: %s |cff38bdf8v|r", sDef.label, enabled and ("|cff34d399" .. chosenShort .. "|r") or "|cff94a3b8Off|r")
+			local btn = makeCell(
+				content,
+				x,
+				y,
+				btnW,
+				22,
+				txt,
+				enabled,
+				Theme.Colors.header,
+				function(btnSelf, mouseBtn)
+					if mouseBtn == "RightButton" then
+						Assignments:SetPersonalChoice(sDef.slotID, nil)
+						Assignments:SaveToCharDB()
+						LBB:RefreshUI()
+					else
+						Theme.ShowDropdownMenu(btnSelf, MatrixFrame:BuildPersonalSlotMenu(sDef))
+					end
+				end,
+				function(_, delta)
+					if #learnedList == 0 then return end
+					local curID = enabled and slotCfg and slotCfg.optionID or nil
+					local ids = {}
+					for _, o in ipairs(learnedList) do
+						table_insert(ids, o.id)
+					end
+					local nextID = cycleList(ids, curID, delta > 0 and -1 or 1)
+					local nextOpt = nextID and slotBucket and slotBucket.byID[nextID] or nil
+					Assignments:SetPersonalChoice(sDef.slotID, nextOpt)
+					Assignments:SaveToCharDB()
+					LBB:RefreshUI()
+				end,
+				sDef.label .. ": Left-Click for Dropdown | Scroll: Cycle | Right-Click: Off"
+			)
+			table_insert(self.cells, btn)
+		end
+		x = x + btnW + gap
+	end
+end
+
+function MatrixFrame:RenderRolesTab(content)
+	local Theme = LBB.Theme
+	local Assignments = LBB.Assignments
+	local Catalog = LBB.Catalog
+
+	local y = 10
+	local hdr = self:AcquireLabel(content, 11, "LEFT", Theme.Colors.accent)
+	hdr:SetPoint("TOPLEFT", content, "TOPLEFT", 10, -y)
+	hdr:SetText("Role & Per-Player Target Buffs (Thorns, Fear Ward, Soulstone, Magic Wards & Utility)")
+	y = y + 16
+
+	local sub = self:AcquireLabel(content, 10, "LEFT", Theme.Colors.muted)
+	sub:SetPoint("TOPLEFT", content, "TOPLEFT", 10, -y)
+	sub:SetText("Assigning a buff to a Role (e.g. Thorns -> Tanks) automatically tracks anyone marked Tank or Raid Main Tank.")
+	y = y + 20
+
+	local labelW = 136
+	local roleW = 102
+	local playerColW = 132
+	local rowH = 26
+
+	-- Count active roster members matching each role for header clarity
+	local roleCounts = {}
+	for _, rKey in ipairs(Catalog.ROLE_ORDER) do
+		local cnt = 0
+		for _, m in ipairs(Assignments.roster) do
+			if Catalog.MatchesRoleFilter(rKey, m) then
+				cnt = cnt + 1
+			end
+		end
+		roleCounts[rKey] = cnt
+	end
+
+	local buffHdr = self:AcquireLabel(content, 10, "LEFT", Theme.Colors.muted)
+	buffHdr:SetSize(labelW, 16)
+	buffHdr:SetPoint("TOPLEFT", content, "TOPLEFT", 10, -y)
+	buffHdr:SetText("Target Buff")
+
+	for idx, rKey in ipairs(Catalog.ROLE_ORDER) do
+		local rInfo = Catalog.ROLE_INFO[rKey]
+		local rHdr = self:AcquireLabel(content, 10, "CENTER", { rInfo.color[1], rInfo.color[2], rInfo.color[3], 1 })
+		rHdr:SetSize(roleW, 16)
+		rHdr:SetPoint("TOPLEFT", content, "TOPLEFT", 10 + labelW + (idx - 1) * (roleW + 4), -y)
+		rHdr:SetText(string.format("%s (%d)", rInfo.name, roleCounts[rKey] or 0))
+	end
+
+	local pColX = 10 + labelW + #Catalog.ROLE_ORDER * (roleW + 4) + 2
+	local pHdr = self:AcquireLabel(content, 10, "CENTER", Theme.Colors.accent)
+	pHdr:SetSize(playerColW, 16)
+	pHdr:SetPoint("TOPLEFT", content, "TOPLEFT", pColX, -y)
+	pHdr:SetText("Specific Players")
+	y = y + 18
+
+	for _, famID in ipairs(Catalog.TARGET_FAMILY_ORDER) do
+		local fam = Catalog.GetFamily(famID)
+		if fam then
+			local casters = collectCastersForFamily(famID)
+			local r, g, b = Theme.GetClassColor(fam.class)
+
+			local rowLbl = self:AcquireLabel(content, 10, "LEFT", { r, g, b, 1 })
+			rowLbl:SetSize(labelW, rowH)
+			rowLbl:SetPoint("TOPLEFT", content, "TOPLEFT", 10, -y)
+			rowLbl:SetText(fam.name)
+
+			for idx, rKey in ipairs(Catalog.ROLE_ORDER) do
+				local rInfo = Catalog.ROLE_INFO[rKey]
+				local entry = Assignments:GetRoleBuff(famID, rKey)
+				local caster = entry and entry.caster or nil
+				local locked = entry and entry.locked or false
+				local cellText = caster and Theme.ColorizeName(shortDisplayName(caster), fam.class) or "|cff64748b--|r"
+
+				local famRef, roleRef = famID, rKey
+				local function applyRole(newCaster, newLocked)
+					Assignments:SetRoleBuff(famRef, roleRef, newCaster, newLocked)
+					Assignments:SaveToCharDB()
+					LBB.Comms:BroadcastLock("ROLE", roleRef, famRef, newCaster, newLocked)
+					LBB:RefreshUI()
+				end
+
+				local cell = makeCell(
+					content,
+					10 + labelW + (idx - 1) * (roleW + 4),
+					y,
+					roleW,
+					rowH,
+					cellText,
+					locked,
+					nil,
+					function(btnSelf, mouseBtn)
+						local cur = Assignments:GetRoleBuff(famRef, roleRef)
+						local curCaster = cur and cur.caster or nil
+						local curLocked = cur and cur.locked or false
+						if _G.IsShiftKeyDown and _G.IsShiftKeyDown() then
+							applyRole(curCaster, not curLocked)
+						elseif mouseBtn == "RightButton" then
+							applyRole(nil, true)
+						else
+							Theme.ShowDropdownMenu(btnSelf, MatrixFrame:BuildRoleBuffMenu(famRef, roleRef, casters, applyRole))
+						end
+					end,
+					function(_, delta)
+						local cur = Assignments:GetRoleBuff(famRef, roleRef)
+						local nextCaster = cycleList(casters, cur and cur.caster or nil, delta > 0 and -1 or 1)
+						applyRole(nextCaster, true)
+					end,
+					string.format(
+						"%s -> %s%s\nLeft-Click: Select Caster | Scroll: Cycle | Right-Click: Clear",
+						fam.name,
+						rInfo.name,
+						caster and ("\nAssigned: " .. caster) or "\nUnassigned"
+					)
+				)
+				table_insert(self.cells, cell)
+			end
+
+			-- Specific Players button for per-player assignments
+			local tMap = Assignments.targetBuffs[famID] or {}
+			local assignedList = {}
+			for tName, e in pairs(tMap) do
+				if e and e.caster then
+					table_insert(assignedList, string.format("%s (%s)", shortDisplayName(tName), shortDisplayName(e.caster)))
+				end
+			end
+			table_sort(assignedList)
+			local pCount = #assignedList
+			local pTxt = (pCount > 0)
+				and string.format("|cff38bdf8%d Assigned|r v", pCount)
+				or "|cff94a3b8+ Player|r v"
+
+			local famRef = famID
+			local pTip = fam.name .. " - Specific Players"
+			if pCount > 0 then
+				pTip = pTip .. ":\n  " .. table_concat(assignedList, "\n  ")
+			else
+				pTip = pTip .. "\nLeft-Click to assign specific individual players"
+			end
+			local pBtn = makeCell(
+				content,
+				pColX,
+				y,
+				playerColW,
+				rowH,
+				pTxt,
+				pCount > 0,
+				Theme.Colors.header,
+				function(btnSelf, mouseBtn)
+					if mouseBtn == "RightButton" then
+						local names = {}
+						for tName in pairs(Assignments.targetBuffs[famRef] or {}) do
+							table_insert(names, tName)
+						end
+						for _, tName in ipairs(names) do
+							Assignments:SetTargetBuff(famRef, tName, nil, false)
+							LBB.Comms:BroadcastLock("TARGET", tName, famRef, nil, false)
+						end
+						Assignments:SaveToCharDB()
+						LBB:RefreshUI()
+					else
+						Theme.ShowDropdownMenu(btnSelf, MatrixFrame:BuildTargetPlayersMenu(famRef, casters))
+					end
+				end,
+				nil,
+				pTip
+			)
+			table_insert(self.cells, pBtn)
+
+			y = y + rowH + 4
+		end
+	end
+end
+
+function MatrixFrame:RenderSelfTab(content)
+	local Theme = LBB.Theme
+	local Assignments = LBB.Assignments
+	local Catalog = LBB.Catalog
+	local Compat = LBB.Compat
+	local pVec = LBB.Capabilities and LBB.Capabilities:GetPlayerVector() or (LBB.Capabilities and LBB.Capabilities:ScanPlayer())
+	local cls = (pVec and pVec.class) or "PRIEST"
+	local clsInfo = Catalog.CLASS_INFO[cls]
+	local clsName = (clsInfo and clsInfo.name) or cls
+
+	local y = 10
+	local hdr = self:AcquireLabel(content, 11, "LEFT", Theme.Colors.accent)
+	hdr:SetPoint("TOPLEFT", content, "TOPLEFT", 10, -y)
+	hdr:SetText(string.format("My Self Buffs & Class Trackers (%s)", clsName))
+	y = y + 16
+
+	local sub = self:AcquireLabel(content, 10, "LEFT", Theme.Colors.muted)
+	sub:SetPoint("TOPLEFT", content, "TOPLEFT", 10, -y)
+	sub:SetText("Enabled personal buffs appear on your Buff Strip, bind to native combat timers, and cast automatically via Smart Auto-Buff.")
+	y = y + 22
+
+	local scan = LBB.Scanner and LBB.Scanner:ScanUnit("player", Assignments.rosterByUnit["player"]) or nil
+
+	-- Column headers
+	local colSlotW = 240
+	local colStateW = 190
+	local colCtrlW = 240
+	local rowH = 28
+
+	local h1 = self:AcquireLabel(content, 10, "LEFT", Theme.Colors.muted)
+	h1:SetSize(colSlotW, 16)
+	h1:SetPoint("TOPLEFT", content, "TOPLEFT", 12, -y)
+	h1:SetText("Personal Buff Slot")
+
+	local h2 = self:AcquireLabel(content, 10, "CENTER", Theme.Colors.muted)
+	h2:SetSize(colStateW, 16)
+	h2:SetPoint("TOPLEFT", content, "TOPLEFT", 12 + colSlotW + 8, -y)
+	h2:SetText("Current Status")
+
+	local h3 = self:AcquireLabel(content, 10, "CENTER", Theme.Colors.muted)
+	h3:SetSize(colCtrlW, 16)
+	h3:SetPoint("TOPLEFT", content, "TOPLEFT", 12 + colSlotW + 8 + colStateW + 8, -y)
+	h3:SetText("Tracking & Selection")
+	y = y + 18
+
+	if cls == "PALADIN" then
+		local ppYield = LBB.Comms:IsPallyPowerLoaded()
+		local selfCfg = Assignments:GetPaladinSelfConfig()
+		if ppYield then
+			local yLbl = self:AcquireLabel(content, 11, "LEFT", Theme.Colors.warn)
+			yLbl:SetPoint("TOPLEFT", content, "TOPLEFT", 12, -y)
+			yLbl:SetText("Paladin Righteous Fury & Seals are currently yielded to standalone PallyPower.")
+			return
+		end
+
+		-- Row 1: Righteous Fury
+		local rfKnown = pVec and pVec.righteousFury and pVec.righteousFury.known
+		local rfLbl = self:AcquireLabel(content, 11, "LEFT", { 0.96, 0.55, 0.73, 1 })
+		rfLbl:SetSize(colSlotW, rowH)
+		rfLbl:SetPoint("TOPLEFT", content, "TOPLEFT", 12, -y)
+		rfLbl:SetText("Righteous Fury (Tank Threat)")
+
+		local rfStatusTxt = "|cff64748bOFF|r"
+		if selfCfg.trackRF then
+			if scan and scan.righteousFury then
+				rfStatusTxt = "|cff34d399ACTIVE|r"
+			else
+				rfStatusTxt = "|cffef4444MISSING|r"
+			end
+		end
+		local rfState = self:AcquireLabel(content, 10, "CENTER", Theme.Colors.text)
+		rfState:SetSize(colStateW, rowH)
+		rfState:SetPoint("TOPLEFT", content, "TOPLEFT", 12 + colSlotW + 8, -y)
+		rfState:SetText(rfStatusTxt)
+
+		local rfBtnTxt = rfKnown
+			and ("Track Righteous Fury: " .. (selfCfg.trackRF and "|cff34d399ON|r" or "|cff94a3b8OFF|r"))
+			or "|cff64748bNot Learned|r"
+		local rfBtn = makeCell(
+			content,
+			12 + colSlotW + 8 + colStateW + 8,
+			y,
+			colCtrlW,
+			rowH,
+			rfBtnTxt,
+			selfCfg.trackRF,
+			Theme.Colors.header,
+			function(_, mouseBtn)
+				if not rfKnown then return end
+				local nextVal = (mouseBtn == "RightButton") and false or (not selfCfg.trackRF)
+				Assignments:SetRighteousFuryEnabled(nextVal)
+				Assignments:SaveToCharDB()
+				LBB:RefreshUI()
+			end,
+			nil,
+			"Toggle Righteous Fury tracking (/lbb rf)"
+		)
+		table_insert(self.cells, rfBtn)
+		y = y + rowH + 6
+
+		-- Row 2: Active Seal
+		local sLbl = self:AcquireLabel(content, 11, "LEFT", { 0.96, 0.55, 0.73, 1 })
+		sLbl:SetSize(colSlotW, rowH)
+		sLbl:SetPoint("TOPLEFT", content, "TOPLEFT", 12, -y)
+		sLbl:SetText("Active Paladin Seal")
+
+		local sealStatusTxt = "|cff64748bOFF|r"
+		if selfCfg.trackSeal and selfCfg.sealName then
+			local sHit = scan and scan.seals and scan.seals[selfCfg.sealName]
+			if sHit then
+				sealStatusTxt = "|cff34d399ACTIVE|r (" .. Theme.FormatTimer(sHit.remaining) .. ")"
+			else
+				sealStatusTxt = "|cffef4444MISSING|r"
+			end
+		end
+		local sState = self:AcquireLabel(content, 10, "CENTER", Theme.Colors.text)
+		sState:SetSize(colStateW, rowH)
+		sState:SetPoint("TOPLEFT", content, "TOPLEFT", 12 + colSlotW + 8, -y)
+		sState:SetText(sealStatusTxt)
+
+		local sealBtnTxt = (selfCfg.trackSeal and selfCfg.sealName)
+			and ("|cff34d399" .. selfCfg.sealName .. "|r  |cff38bdf8v|r")
+			or "|cff94a3b8Off (Select Seal)|r  |cff38bdf8v|r"
+		local sealBtn = makeCell(
+			content,
+			12 + colSlotW + 8 + colStateW + 8,
+			y,
+			colCtrlW,
+			rowH,
+			sealBtnTxt,
+			selfCfg.trackSeal,
+			Theme.Colors.header,
+			function(btnSelf, mouseBtn)
+				if mouseBtn == "RightButton" then
+					Assignments:SetSelectedSeal(nil)
+					Assignments:SaveToCharDB()
+					LBB:RefreshUI()
+				else
+					Theme.ShowDropdownMenu(btnSelf, MatrixFrame:BuildPaladinSealMenu())
+				end
+			end,
+			nil,
+			"Choose your active Paladin Seal (/lbb seal)"
+		)
+		table_insert(self.cells, sealBtn)
+		return
+	end
+
+	local slots = Catalog.PERSONAL_SLOTS and Catalog.PERSONAL_SLOTS[cls] or nil
+	if not slots or #slots == 0 then
+		local rLbl = self:AcquireLabel(content, 11, "LEFT", Theme.Colors.muted)
+		rLbl:SetPoint("TOPLEFT", content, "TOPLEFT", 12, -y)
+		rLbl:SetText("Weapon Poisons & Sharpening Stones are tracked automatically in the Consumables tab.")
+		return
+	end
+
+	local r, g, b = Theme.GetClassColor(cls)
+	for _, slotDef in ipairs(slots) do
+		local sDef = slotDef
+		local slotBucket = pVec and pVec.personal and pVec.personal[sDef.slotID] or nil
+		local learnedList = (slotBucket and slotBucket.list) or {}
+		local slotCfg = Assignments:GetPersonalSlot(sDef.slotID)
+		local enabled = slotCfg and slotCfg.enabled and true or false
+
+		local rowLbl = self:AcquireLabel(content, 11, "LEFT", { r, g, b, 1 })
+		rowLbl:SetSize(colSlotW, rowH)
+		rowLbl:SetPoint("TOPLEFT", content, "TOPLEFT", 12, -y)
+		rowLbl:SetText(sDef.label)
+
+		-- Compute live status text
+		local statusTxt = "|cff64748bOFF|r"
+		if enabled then
+			local optName = slotCfg.optionName or (learnedList[1] and learnedList[1].name)
+			if sDef.requiresPet and not Compat.UnitExists("pet") then
+				statusTxt = "|cfffbbf24NO ACTIVE PET|r"
+			elseif sDef.checkType == "WEAPON_OH" and not Compat.HasOffHandWeapon() then
+				statusTxt = "|cfffbbf24NO OFF-HAND WEAPON|r"
+			elseif sDef.checkType == "WEAPON_MH" then
+				local mh = scan and scan.weaponImbues and scan.weaponImbues.mh
+				statusTxt = mh and ("|cff34d399ACTIVE|r (" .. Theme.FormatTimer(mh.remaining) .. ")") or "|cffef4444MISSING|r"
+			elseif sDef.checkType == "WEAPON_OH" then
+				local oh = scan and scan.weaponImbues and scan.weaponImbues.oh
+				statusTxt = oh and ("|cff34d399ACTIVE|r (" .. Theme.FormatTimer(oh.remaining) .. ")") or "|cffef4444MISSING|r"
+			elseif optName then
+				local pHit = scan and scan.personalByName and scan.personalByName[optName]
+				if pHit then
+					if sDef.isPermanentToggle or not pHit.remaining or pHit.remaining >= 99999 then
+						statusTxt = "|cff34d399ACTIVE|r"
+					else
+						statusTxt = "|cff34d399ACTIVE|r (" .. Theme.FormatTimer(pHit.remaining) .. ")"
+					end
+				else
+					statusTxt = "|cffef4444MISSING|r"
+				end
+			end
+		elseif #learnedList == 0 then
+			statusTxt = "|cff64748bNOT LEARNED|r"
+		end
+
+		local stLbl = self:AcquireLabel(content, 10, "CENTER", Theme.Colors.text)
+		stLbl:SetSize(colStateW, rowH)
+		stLbl:SetPoint("TOPLEFT", content, "TOPLEFT", 12 + colSlotW + 8, -y)
+		stLbl:SetText(statusTxt)
+
+		if sDef.mode == "TOGGLE" then
+			local opt = learnedList[1]
+			local ctrlTxt = opt
+				and ((opt.name or sDef.label) .. ": " .. (enabled and "|cff34d399ON|r" or "|cff94a3b8OFF|r"))
+				or "|cff64748bNot Learned Yet|r"
+			local btn = makeCell(
+				content,
+				12 + colSlotW + 8 + colStateW + 8,
+				y,
+				colCtrlW,
+				rowH,
+				ctrlTxt,
+				enabled,
+				Theme.Colors.header,
+				function(_, mouseBtn)
+					if not opt then return end
+					local nextState = (mouseBtn == "RightButton") and false or (not enabled)
+					Assignments:SetPersonalToggle(sDef.slotID, nextState, opt)
+					Assignments:SaveToCharDB()
+					LBB:RefreshUI()
+				end,
+				nil,
+				sDef.label .. ": Left-Click to toggle ON/OFF | Right-Click: Turn OFF"
+			)
+			table_insert(self.cells, btn)
+		else
+			local curLabel = (enabled and slotCfg.optionName)
+				and ("|cff34d399" .. slotCfg.optionName .. "|r  |cff38bdf8v|r")
+				or "|cff94a3b8Off (Select Buff)|r  |cff38bdf8v|r"
+			local btn = makeCell(
+				content,
+				12 + colSlotW + 8 + colStateW + 8,
+				y,
+				colCtrlW,
+				rowH,
+				curLabel,
+				enabled,
+				Theme.Colors.header,
+				function(btnSelf, mouseBtn)
+					if mouseBtn == "RightButton" then
+						Assignments:SetPersonalChoice(sDef.slotID, nil)
+						Assignments:SaveToCharDB()
+						LBB:RefreshUI()
+					else
+						Theme.ShowDropdownMenu(btnSelf, MatrixFrame:BuildPersonalSlotMenu(sDef))
+					end
+				end,
+				function(_, delta)
+					if #learnedList == 0 then return end
+					local curID = enabled and slotCfg and slotCfg.optionID or nil
+					local ids = {}
+					for _, o in ipairs(learnedList) do
+						table_insert(ids, o.id)
+					end
+					local nextID = cycleList(ids, curID, delta > 0 and -1 or 1)
+					local nextOpt = nextID and slotBucket and slotBucket.byID[nextID] or nil
+					Assignments:SetPersonalChoice(sDef.slotID, nextOpt)
+					Assignments:SaveToCharDB()
+					LBB:RefreshUI()
+				end,
+				sDef.label .. ": Left-Click for Dropdown | Scroll: Cycle | Right-Click: Turn Off"
+			)
+			table_insert(self.cells, btn)
+		end
+
+		y = y + rowH + 6
 	end
 end
 
@@ -1250,10 +2064,24 @@ function MatrixFrame:Refresh()
 		self.frame._ppStatus:SetTextColor(Theme.Colors.good[1], Theme.Colors.good[2], Theme.Colors.good[3], 1)
 	end
 
+	if self.frame._hint then
+		if self.activeTab == "SELF" then
+			self.frame._hint:SetText("Left-Click: Toggle or Select Buff  |  Scroll: Cycle Options  |  Right-Click: Turn Off  |  Saved per character & in Presets")
+		elseif self.activeTab == "ROLES" then
+			self.frame._hint:SetText("Left-Click: Assign Caster to Role/Player  |  Scroll: Cycle  |  Right-Click: Clear  |  Shift+Click: Toggle Lock")
+		else
+			self.frame._hint:SetText("Left-Click: Select from Dropdown  |  Scroll: Cycle  |  Right-Click: Clear  |  Shift+Click: Toggle Lock")
+		end
+	end
+
 	self:ClearContentWidgets()
 	local content = self.frame._content
 	if self.activeTab == "BUFFS" then
 		self:RenderBuffsTab(content)
+	elseif self.activeTab == "ROLES" then
+		self:RenderRolesTab(content)
+	elseif self.activeTab == "SELF" then
+		self:RenderSelfTab(content)
 	elseif self.activeTab == "TOTEMS" then
 		self:RenderTotemsTab(content)
 	else

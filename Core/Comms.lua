@@ -443,6 +443,13 @@ function Comms:HandleLBBMessage(sender, payload, distribution)
 		elseif scope == "TARGET" then
 			if buffID and key then
 				LBB.Assignments:SetTargetBuff(buffID, key, casterName, locked)
+				LBB.Assignments:SaveToCharDB()
+				self:NotifyChange("LOCK", scope)
+			end
+		elseif scope == "ROLE" then
+			if buffID and key then
+				LBB.Assignments:SetRoleBuff(buffID, key, casterName, locked)
+				LBB.Assignments:SaveToCharDB()
 				self:NotifyChange("LOCK", scope)
 			end
 		elseif scope == "AURA" then

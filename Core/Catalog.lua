@@ -129,6 +129,21 @@ Catalog.BUFF_FAMILIES = {
 		},
 		auraNames = { "Shadow Protection", "Prayer of Shadow Protection" },
 	},
+	FEAR_WARD = {
+		id = "FEAR_WARD",
+		class = "PRIEST",
+		name = "Fear Ward",
+		shortName = "FWard",
+		icon = 135902, -- Spell_Holy_Excorcism
+		scope = "TARGET",
+		targetFilter = "TANK_MELEE",
+		optional = true,
+		defaultDuration = 600,
+		singleRanks = {
+			{ rank = 1, spellID = 6346, minLevel = 20 },
+		},
+		auraNames = { "Fear Ward" },
+	},
 
 	-- MAGE
 	INTELLECT = {
@@ -567,12 +582,31 @@ end
 
 -- Deterministic registration order per class
 Catalog.FAMILY_ORDER = {
-	"FORTITUDE", "SPIRIT", "SHADOW_PROT",
+	"FORTITUDE", "SPIRIT", "SHADOW_PROT", "FEAR_WARD",
 	"INTELLECT", "DAMPEN_MAGIC", "AMPLIFY_MAGIC",
 	"MOTW", "THORNS",
 	"BOW", "BOM", "BOK", "BOSALV", "BOL", "BOSANC",
 	"SOULSTONE", "BLOOD_PACT", "DETECT_INVIS", "UNENDING_BREATH",
 	"BATTLE_SHOUT",
+}
+
+Catalog.TARGET_FAMILY_ORDER = {
+	"THORNS",
+	"FEAR_WARD",
+	"SOULSTONE",
+	"DAMPEN_MAGIC",
+	"AMPLIFY_MAGIC",
+	"DETECT_INVIS",
+	"UNENDING_BREATH",
+}
+
+Catalog.ROLE_ORDER = { "TANK", "HEALER", "DAMAGER", "MELEE" }
+
+Catalog.ROLE_INFO = {
+	TANK    = { id = "TANK",    name = "Tanks",   short = "TANK",  color = { 0.38, 0.65, 0.98 } },
+	HEALER  = { id = "HEALER",  name = "Healers", short = "HEAL",  color = { 0.25, 0.88, 0.55 } },
+	DAMAGER = { id = "DAMAGER", name = "DPS",     short = "DPS",   color = { 0.96, 0.45, 0.45 } },
+	MELEE   = { id = "MELEE",   name = "Melee",   short = "MELEE", color = { 0.98, 0.75, 0.25 } },
 }
 
 for _, famID in ipairs(Catalog.FAMILY_ORDER) do
@@ -619,6 +653,209 @@ for _, sealDef in ipairs(Catalog.PALADIN_SEALS) do
 	Catalog.SEAL_BY_NAME[sealDef.name] = sealDef
 	for _, sid in ipairs(sealDef.ranks) do
 		Catalog.SEAL_SPELL_ID_TO_ID[sid] = sealDef.id
+	end
+end
+
+-- All-Class Personal Self-Buffs (Inner Fire, Shadowform, Shaman Imbues & Shields, Mage/Warlock Armors, Soul Link, Druid Self-Thorns/Omen, Hunter Aspects, etc.)
+local SHAMAN_IMBUE_OPTIONS = {
+	{ id = "WINDFURY_WEAPON",    name = "Windfury Weapon",    shortName = "WF", icon = 136018, duration = 1800, ranks = { 25505, 16362, 10486, 8235, 8232 } },
+	{ id = "FLAMETONGUE_WEAPON", name = "Flametongue Weapon", shortName = "FT", icon = 135814, duration = 1800, ranks = { 25489, 16342, 16341, 10400, 8030, 8027, 8024 } },
+	{ id = "FROSTBRAND_WEAPON",  name = "Frostbrand Weapon",  shortName = "FB", icon = 135847, duration = 1800, ranks = { 25500, 16356, 16355, 10456, 8038, 8033 } },
+	{ id = "ROCKBITER_WEAPON",   name = "Rockbiter Weapon",   shortName = "RB", icon = 136086, duration = 1800, ranks = { 25479, 16316, 16315, 16314, 10399, 8019, 8018, 8017 } },
+	{ id = "EARTHLIVING_WEAPON", name = "Earthliving Weapon", shortName = "EL", icon = 237578, duration = 1800, ranks = { 51994, 51993, 51992, 51991, 51730 } },
+}
+
+Catalog.PERSONAL_SLOTS = {
+	PRIEST = {
+		{
+			slotID = "PRIEST_INNER_FIRE",
+			label = "Inner Fire",
+			mode = "TOGGLE",
+			checkType = "AURA",
+			options = {
+				{ id = "INNER_FIRE", name = "Inner Fire", shortName = "IFire", icon = 135926, duration = 600, ranks = { 25431, 10952, 10951, 1006, 7128, 602, 588 } },
+			},
+		},
+		{
+			slotID = "PRIEST_SHADOWFORM",
+			label = "Shadowform",
+			mode = "TOGGLE",
+			checkType = "AURA",
+			isPermanentToggle = true,
+			options = {
+				{ id = "SHADOWFORM", name = "Shadowform", shortName = "SForm", icon = 136200, duration = 0, ranks = { 15473 } },
+			},
+		},
+		{
+			slotID = "PRIEST_GUARD",
+			label = "Priest Guard",
+			mode = "CHOICE",
+			checkType = "AURA",
+			hideWhenUnknown = true,
+			options = {
+				{ id = "SHADOWGUARD",       name = "Shadowguard",       shortName = "SGuard", icon = 136181, duration = 600, ranks = { 25477, 19312, 19311, 19310, 19309, 19308, 18137 } },
+				{ id = "TOUCH_OF_WEAKNESS", name = "Touch of Weakness", shortName = "Touch",  icon = 136143, duration = 120, ranks = { 25461, 19266, 19265, 19264, 19262, 19261, 2652 } },
+			},
+		},
+	},
+	SHAMAN = {
+		{
+			slotID = "SHAMAN_IMBUE_MH",
+			label = "Weapon Imbue",
+			mode = "CHOICE",
+			checkType = "WEAPON_MH",
+			dynamicPattern = "Weapon$",
+			options = SHAMAN_IMBUE_OPTIONS,
+		},
+		{
+			slotID = "SHAMAN_IMBUE_OH",
+			label = "Off-Hand Imbue",
+			mode = "CHOICE",
+			checkType = "WEAPON_OH",
+			dynamicPattern = "Weapon$",
+			options = SHAMAN_IMBUE_OPTIONS,
+		},
+		{
+			slotID = "SHAMAN_SHIELD",
+			label = "Shield",
+			mode = "CHOICE",
+			checkType = "AURA",
+			dynamicPattern = "Shield$",
+			options = {
+				{ id = "LIGHTNING_SHIELD", name = "Lightning Shield", shortName = "LShield", icon = 136051, duration = 600, ranks = { 25472, 25469, 10432, 10431, 945, 905, 325, 324 } },
+				{ id = "WATER_SHIELD",     name = "Water Shield",     shortName = "WShield", icon = 132315, duration = 600, ranks = { 33736, 24398, 57960, 52127 } },
+			},
+		},
+	},
+	MAGE = {
+		{
+			slotID = "MAGE_ARMOR",
+			label = "Armor",
+			mode = "CHOICE",
+			checkType = "AURA",
+			dynamicPattern = "Armor$",
+			options = {
+				{ id = "MAGE_ARMOR_SPELL", name = "Mage Armor",   shortName = "Mage",   icon = 135991, duration = 1800, ranks = { 27125, 22783, 22782, 6117 } },
+				{ id = "ICE_ARMOR",        name = "Ice Armor",    shortName = "Ice",    icon = 135843, duration = 1800, ranks = { 27124, 10220, 10219, 7320, 7302 } },
+				{ id = "FROST_ARMOR",      name = "Frost Armor",  shortName = "Frost",  icon = 135843, duration = 1800, ranks = { 7301, 7300, 168 } },
+				{ id = "MOLTEN_ARMOR",     name = "Molten Armor", shortName = "Molten", icon = 132221, duration = 1800, ranks = { 30482, 43045, 43046 } },
+			},
+		},
+		{
+			slotID = "MAGE_BARRIER",
+			label = "Ice Barrier",
+			mode = "TOGGLE",
+			checkType = "AURA",
+			options = {
+				{ id = "ICE_BARRIER", name = "Ice Barrier", shortName = "IBar", icon = 135988, duration = 60, ranks = { 33405, 27134, 13033, 13032, 13031, 11426 } },
+			},
+		},
+	},
+	WARLOCK = {
+		{
+			slotID = "WARLOCK_ARMOR",
+			label = "Armor",
+			mode = "CHOICE",
+			checkType = "AURA",
+			dynamicPattern = "Armor$",
+			options = {
+				{ id = "FEL_ARMOR",   name = "Fel Armor",   shortName = "Fel",   icon = 136156, duration = 1800, ranks = { 28189, 28176, 47892, 47893 } },
+				{ id = "DEMON_ARMOR", name = "Demon Armor", shortName = "Demon", icon = 136185, duration = 1800, ranks = { 27260, 11735, 11734, 11733, 706 } },
+				{ id = "DEMON_SKIN",  name = "Demon Skin",  shortName = "Skin",  icon = 136185, duration = 1800, ranks = { 696, 687 } },
+			},
+		},
+		{
+			slotID = "WARLOCK_SOUL_LINK",
+			label = "Soul Link",
+			mode = "TOGGLE",
+			checkType = "AURA",
+			isPermanentToggle = true,
+			requiresPet = true,
+			options = {
+				{ id = "SOUL_LINK", name = "Soul Link", shortName = "SLink", icon = 136160, duration = 0, ranks = { 19028 } },
+			},
+		},
+	},
+	DRUID = {
+		{
+			slotID = "DRUID_SELF_THORNS",
+			label = "Self Thorns",
+			mode = "TOGGLE",
+			checkType = "AURA",
+			options = {
+				{ id = "SELF_THORNS", name = "Thorns", shortName = "Thorns", icon = 136104, duration = 600, ranks = { 26992, 9910, 9756, 8914, 1075, 782, 467 } },
+			},
+		},
+		{
+			slotID = "DRUID_OMEN",
+			label = "Omen of Clarity",
+			mode = "TOGGLE",
+			checkType = "AURA",
+			options = {
+				{ id = "OMEN_OF_CLARITY", name = "Omen of Clarity", shortName = "Omen", icon = 136017, duration = 1800, ranks = { 16864 } },
+			},
+		},
+	},
+	HUNTER = {
+		{
+			slotID = "HUNTER_ASPECT",
+			label = "Aspect",
+			mode = "CHOICE",
+			checkType = "AURA",
+			isPermanentToggle = true,
+			dynamicPattern = "^Aspect of ",
+			options = {
+				{ id = "ASPECT_OF_THE_HAWK",    name = "Aspect of the Hawk",    shortName = "Hawk",  icon = 136076, duration = 0, ranks = { 27044, 25296, 14322, 14321, 14320, 14319, 14318, 13165 } },
+				{ id = "ASPECT_OF_THE_VIPER",   name = "Aspect of the Viper",   shortName = "Viper", icon = 132160, duration = 0, ranks = { 34074 } },
+				{ id = "ASPECT_OF_THE_MONKEY",  name = "Aspect of the Monkey",  shortName = "Mnky",  icon = 132159, duration = 0, ranks = { 13163 } },
+				{ id = "ASPECT_OF_THE_CHEETAH", name = "Aspect of the Cheetah", shortName = "Cheet", icon = 132242, duration = 0, ranks = { 5118 } },
+				{ id = "ASPECT_OF_THE_PACK",    name = "Aspect of the Pack",    shortName = "Pack",  icon = 132267, duration = 0, ranks = { 13159 } },
+				{ id = "ASPECT_OF_THE_WILD",    name = "Aspect of the Wild",    shortName = "Wild",  icon = 136074, duration = 0, ranks = { 27045, 20190, 20043 } },
+				{ id = "ASPECT_OF_THE_BEAST",   name = "Aspect of the Beast",   shortName = "Beast", icon = 132252, duration = 0, ranks = { 13161 } },
+			},
+		},
+		{
+			slotID = "HUNTER_TRUESHOT",
+			label = "Trueshot Aura",
+			mode = "TOGGLE",
+			checkType = "AURA",
+			isPermanentToggle = true,
+			options = {
+				{ id = "TRUESHOT_AURA", name = "Trueshot Aura", shortName = "TSA", icon = 132329, duration = 1800, ranks = { 27066, 20906, 20905, 19506 } },
+			},
+		},
+	},
+	WARRIOR = {
+		{
+			slotID = "WARRIOR_SHOUT",
+			label = "Personal Shout",
+			mode = "CHOICE",
+			checkType = "AURA",
+			options = {
+				{ id = "SELF_BATTLE_SHOUT", name = "Battle Shout",     shortName = "BShout", icon = 132333, duration = 120, dedupeFamilyID = "BATTLE_SHOUT", ranks = { 25289, 11551, 11550, 11549, 6192, 5242, 6673 } },
+				{ id = "COMMANDING_SHOUT",  name = "Commanding Shout", shortName = "CShout", icon = 132351, duration = 120, ranks = { 469 } },
+			},
+		},
+	},
+}
+
+Catalog.PERSONAL_SLOT_BY_ID = {}
+Catalog.PERSONAL_OPT_BY_ID = {}
+Catalog.PERSONAL_SPELL_ID_TO_OPT = {}
+Catalog.PERSONAL_NAME_TO_OPT = {}
+
+for cls, slotList in pairs(Catalog.PERSONAL_SLOTS) do
+	for _, slotDef in ipairs(slotList) do
+		slotDef.class = cls
+		Catalog.PERSONAL_SLOT_BY_ID[slotDef.slotID] = slotDef
+		for _, opt in ipairs(slotDef.options or {}) do
+			opt.checkType = opt.checkType or slotDef.checkType or "AURA"
+			Catalog.PERSONAL_OPT_BY_ID[opt.id] = opt
+			Catalog.PERSONAL_NAME_TO_OPT[opt.name] = opt
+			for _, sid in ipairs(opt.ranks or {}) do
+				Catalog.PERSONAL_SPELL_ID_TO_OPT[sid] = opt
+			end
+		end
 	end
 end
 
@@ -801,4 +1038,23 @@ function Catalog.MatchesUnitFilter(family, unitInfo)
 		return info and info.isCaster or false
 	end
 	return true
+end
+
+function Catalog.MatchesRoleFilter(roleKey, unitInfo)
+	if not roleKey or not unitInfo then
+		return false
+	end
+	if roleKey == "TANK" then
+		return unitInfo.role == "TANK" or unitInfo.isMainTank == true
+	elseif roleKey == "HEALER" then
+		return unitInfo.role == "HEALER"
+	elseif roleKey == "DAMAGER" then
+		return unitInfo.role == "DAMAGER"
+	elseif roleKey == "MELEE" then
+		return unitInfo.role == "TANK"
+			or unitInfo.isMainTank == true
+			or unitInfo.class == "WARRIOR"
+			or unitInfo.class == "ROGUE"
+	end
+	return false
 end

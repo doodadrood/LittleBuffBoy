@@ -428,14 +428,24 @@ local function formatDutyScope(duty)
 			table_insert(parts, "+" .. table_concat(duty.overrideTargets, ", "))
 		end
 		return table_concat(parts, ", ")
-	elseif duty.kind == "TARGET_BUFF" and duty.targets then
-		return table_concat(duty.targets, ", ")
+	elseif duty.kind == "TARGET_BUFF" then
+		local parts = {}
+		for _, roleKey in ipairs(duty.roles or {}) do
+			local rInfo = LBB.Catalog.ROLE_INFO and LBB.Catalog.ROLE_INFO[roleKey]
+			table_insert(parts, "Role: " .. (rInfo and rInfo.name or roleKey))
+		end
+		if duty.targets and #duty.targets > 0 then
+			table_insert(parts, table_concat(duty.targets, ", "))
+		end
+		return table_concat(parts, " + ")
 	elseif duty.kind == "PALADIN_AURA" then
 		return "Party Aura"
 	elseif duty.kind == "RIGHTEOUS_FURY" then
 		return "Self (Prot Tank)"
 	elseif duty.kind == "PALADIN_SEAL" then
 		return "Self (Active Seal)"
+	elseif duty.kind == "PERSONAL_BUFF" then
+		return "Self (" .. (duty.slotLabel or "Personal") .. ")"
 	elseif duty.kind == "SHAMAN_TOTEM" then
 		return duty.element .. " Totem"
 	end
@@ -507,7 +517,7 @@ local function createTile(parent, index)
 			_G.GameTooltip:AddDoubleLine("Reagents:", tostring(eval.reagentCount), 0.7, 0.75, 0.82, rColor[1], rColor[2], rColor[3])
 		end
 		_G.GameTooltip:AddLine(" ")
-		if duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL" then
+		if duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL" or duty.kind == "PERSONAL_BUFF" then
 			_G.GameTooltip:AddLine("Left-Click: Cast on self", 0.65, 0.85, 1.0)
 			if LBB.NativeAuras and LBB.NativeAuras:IsBound(self._timer) then
 				_G.GameTooltip:AddLine("Combat timer: Native Blizzard AuraContainer active", 0.5, 0.95, 0.6)
@@ -921,9 +931,12 @@ function BuffStrip:Refresh()
 			tile._lockDot:Hide()
 		end
 
-		-- Bind native Blizzard CustomAuraContainerTemplate combat timer overlay for Righteous Fury & Seals
+		-- Bind native Blizzard CustomAuraContainerTemplate combat timer overlay for self aura buffs
 		if LBB.NativeAuras then
-			if (duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL") and eval.nativeSpellIDs then
+			local isAuraSelfDuty = (duty.kind == "RIGHTEOUS_FURY"
+				or duty.kind == "PALADIN_SEAL"
+				or (duty.kind == "PERSONAL_BUFF" and duty.checkType ~= "WEAPON_MH" and duty.checkType ~= "WEAPON_OH"))
+			if isAuraSelfDuty and eval.nativeSpellIDs and next(eval.nativeSpellIDs) ~= nil then
 				if LBB.NativeAuras:BindTimer(tile, tile._timer, "player", eval.nativeSpellIDs) then
 					-- Base bar sits in red behind Blizzard's green active bar so combat drops show cleanly
 					tile._statusBar:SetColorTexture(Theme.Colors.danger[1], Theme.Colors.danger[2], Theme.Colors.danger[3], 1)
@@ -947,7 +960,13 @@ function BuffStrip:Refresh()
 		Compat.SetSecureAttribute(tile, "type2", "spell")
 		Compat.SetSecureAttribute(tile, "spell2", groupSpell)
 
-		if duty.kind == "PALADIN_AURA" or duty.kind == "SHAMAN_TOTEM" or duty.kind == "RIGHTEOUS_FURY" or duty.kind == "PALADIN_SEAL" or duty.familyID == "BATTLE_SHOUT" then
+		if duty.kind == "PALADIN_AURA"
+			or duty.kind == "SHAMAN_TOTEM"
+			or duty.kind == "RIGHTEOUS_FURY"
+			or duty.kind == "PALADIN_SEAL"
+			or duty.kind == "PERSONAL_BUFF"
+			or duty.familyID == "BATTLE_SHOUT"
+		then
 			Compat.SetSecureAttribute(tile, "unit1", "player")
 			Compat.SetSecureAttribute(tile, "unit2", "player")
 			Compat.SetSecureAttribute(tile, "combat_units", "player")

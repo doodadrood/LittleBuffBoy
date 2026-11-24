@@ -34,6 +34,8 @@ function Assignments:Reset()
 	self.classBuffs = {}
 	-- targetBuffs[familyID][targetName] = { caster = name, locked = bool }
 	self.targetBuffs = {}
+	-- roleBuffs[familyID][roleKey] = { caster = name, locked = bool }
+	self.roleBuffs = {}
 	-- paladinNormalOverrides[casterName][targetName] = { familyID = famID, class = classToken, locked = bool }
 	self.paladinNormalOverrides = {}
 	-- paladinAuras[casterName] = { auraID = 1..7 or 0, locked = bool }
@@ -52,6 +54,7 @@ function Assignments:SnapshotState()
 		groupBuffs = deepCopy(self.groupBuffs),
 		classBuffs = deepCopy(self.classBuffs),
 		targetBuffs = deepCopy(self.targetBuffs),
+		roleBuffs = deepCopy(self.roleBuffs),
 		paladinNormalOverrides = deepCopy(self.paladinNormalOverrides),
 		paladinAuras = deepCopy(self.paladinAuras),
 		shamanTotems = deepCopy(self.shamanTotems),
@@ -65,6 +68,7 @@ function Assignments:ApplySnapshot(snap, skipPaladins)
 	end
 	self.groupBuffs = deepCopy(snap.groupBuffs or {})
 	self.targetBuffs = deepCopy(snap.targetBuffs or {})
+	self.roleBuffs = deepCopy(snap.roleBuffs or {})
 	self.shamanTotems = deepCopy(snap.shamanTotems or {})
 	if not skipPaladins then
 		self.classBuffs = deepCopy(snap.classBuffs or {})
@@ -145,6 +149,7 @@ function Assignments:SavePreset(name)
 		name = name,
 		assignments = self:SnapshotState(),
 		paladinSelf = deepCopy(self:GetPaladinSelfConfig()),
+		personalBuffs = deepCopy(self:GetPersonalConfig()),
 		savedAt = LBB.Compat.GetTime(),
 	}
 	LBB.CharDB.activePresetName = name
@@ -166,6 +171,10 @@ function Assignments:LoadPreset(name, skipPaladins)
 		cfg.sealID = preset.paladinSelf.sealID
 		cfg.sealName = preset.paladinSelf.sealName
 		cfg.tankPrompted = true
+	end
+	if type(preset.personalBuffs) == "table" then
+		LBB.CharDB = LBB.CharDB or {}
+		LBB.CharDB.personalBuffs = deepCopy(preset.personalBuffs)
 	end
 	LBB.CharDB.activePresetName = name
 	self:SaveToCharDB()
@@ -239,6 +248,16 @@ function Assignments:UnlockForFreshRaid(playerName, playerClass, skipPaladins)
 				end
 			end
 		end
+		for famID, roles in pairs(self.roleBuffs) do
+			local fam = LBB.Catalog.GetFamily(famID)
+			if fam and fam.class == playerClass then
+				for _, entry in pairs(roles) do
+					if entry.caster == playerName then
+						entry.locked = false
+					end
+				end
+			end
+		end
 	end
 end
 
@@ -246,6 +265,7 @@ function Assignments:ClearAll(preserveLocks, skipPaladins)
 	if not preserveLocks then
 		self.groupBuffs = {}
 		self.targetBuffs = {}
+		self.roleBuffs = {}
 		self.shamanTotems = {}
 		if not skipPaladins then
 			self.classBuffs = {}
@@ -283,6 +303,13 @@ function Assignments:ClearAll(preserveLocks, skipPaladins)
 			end
 		end
 	end
+	for famID, roles in pairs(self.roleBuffs) do
+		for roleKey, entry in pairs(roles) do
+			if not entry.locked then
+				roles[roleKey] = nil
+			end
+		end
+	end
 	for sg, byCaster in pairs(self.shamanTotems) do
 		for caster, entry in pairs(byCaster) do
 			for _, el in ipairs(LBB.Catalog.TOTEM_ELEMENTS) do
@@ -304,7 +331,9 @@ function Assignments:SetRoster(members)
 			unit = m.unit,
 			class = m.class,
 			subgroup = m.subgroup or 1,
-			role = m.role or "NONE",
+			role = m.role or (m.isMainTank and "TANK" or "NONE"),
+			isMainTank = m.isMainTank and true or false,
+			isMainAssist = m.isMainAssist and true or false,
 			guid = m.guid or m.name,
 			online = (m.online ~= false),
 			alive = (m.alive ~= false),
@@ -342,9 +371,9 @@ function Assignments:RefreshRosterFromGame()
 			local unit = "raid" .. i
 			local prev = prevByUnit[unit]
 			if Compat.UnitExists(unit) or (inCombat and prev) then
-				local name, rank, subgroup, _, _, fileName, _, online, isDead = nil, 0, 1, nil, nil, nil, nil, true, false
+				local name, rank, subgroup, fileName, online, isDead, raidRole, combatRole = nil, 0, 1, nil, true, false, nil, nil
 				if _G.GetRaidRosterInfo then
-					local ok, n, r, sg, _, _, cls, _, onl, dead = pcall(_G.GetRaidRosterInfo, i)
+					local ok, n, r, sg, _, _, cls, _, onl, dead, rRole, _, cRole = pcall(_G.GetRaidRosterInfo, i)
 					if ok and n and not Compat.IsSecret(n) then
 						name = Compat.NormalizeName(n)
 						rank = Compat.SafeRead(r, 0)
@@ -352,6 +381,8 @@ function Assignments:RefreshRosterFromGame()
 						fileName = Compat.SafeRead(cls, nil)
 						online = Compat.SafeRead(onl, true)
 						isDead = Compat.SafeRead(dead, false)
+						raidRole = Compat.SafeRead(rRole, nil)
+						combatRole = Compat.SafeRead(cRole, nil)
 					end
 				end
 				name = name or Compat.GetFullUnitName(unit) or (prev and prev.name)
@@ -360,9 +391,19 @@ function Assignments:RefreshRosterFromGame()
 					fileName = cls or (prev and prev.class)
 				end
 				if name and fileName then
+					local isMT = (raidRole == "MAINTANK") or Compat.GetPartyAssignment("MAINTANK", unit) or (inCombat and prev and prev.isMainTank) or false
+					local isMA = (raidRole == "MAINASSIST") or Compat.GetPartyAssignment("MAINASSIST", unit) or (inCombat and prev and prev.isMainAssist) or false
 					local role = Compat.UnitGroupRolesAssigned(unit)
-					if (not role or role == "NONE") and prev and prev.role then
-						role = prev.role
+					if not role or role == "NONE" then
+						if isMT or combatRole == "TANK" then
+							role = "TANK"
+						elseif combatRole == "HEALER" then
+							role = "HEALER"
+						elseif combatRole == "DAMAGER" then
+							role = "DAMAGER"
+						elseif prev and prev.role then
+							role = prev.role
+						end
 					end
 					table_insert(members, {
 						name = name,
@@ -370,6 +411,8 @@ function Assignments:RefreshRosterFromGame()
 						class = fileName,
 						subgroup = subgroup or (prev and prev.subgroup) or 1,
 						role = role or "NONE",
+						isMainTank = isMT,
+						isMainAssist = isMA,
 						guid = Compat.UnitGUID(unit) or (prev and prev.guid) or name,
 						online = online and Compat.UnitIsConnected(unit),
 						alive = (not isDead) and (not Compat.UnitIsDeadOrGhost(unit)),
@@ -399,9 +442,15 @@ function Assignments:RefreshRosterFromGame()
 				local _, cls = Compat.UnitClass(unit)
 				cls = cls or (prev and prev.class)
 				if name and cls then
+					local isMT = Compat.GetPartyAssignment("MAINTANK", unit) or (inCombat and prev and prev.isMainTank) or false
+					local isMA = Compat.GetPartyAssignment("MAINASSIST", unit) or (inCombat and prev and prev.isMainAssist) or false
 					local role = Compat.UnitGroupRolesAssigned(unit)
-					if (not role or role == "NONE") and prev and prev.role then
-						role = prev.role
+					if not role or role == "NONE" then
+						if isMT then
+							role = "TANK"
+						elseif prev and prev.role then
+							role = prev.role
+						end
 					end
 					table_insert(members, {
 						name = name,
@@ -409,6 +458,8 @@ function Assignments:RefreshRosterFromGame()
 						class = cls,
 						subgroup = (prev and prev.subgroup) or 1,
 						role = role or "NONE",
+						isMainTank = isMT,
+						isMainAssist = isMA,
 						guid = Compat.UnitGUID(unit) or (prev and prev.guid) or name,
 						online = Compat.UnitIsConnected(unit),
 						alive = not Compat.UnitIsDeadOrGhost(unit),
@@ -525,6 +576,29 @@ function Assignments:GetTargetBuff(familyID, targetName)
 	return self.targetBuffs[familyID] and self.targetBuffs[familyID][targetName] or nil
 end
 
+function Assignments:SetRoleBuff(familyID, roleKey, casterName, locked)
+	if not familyID or not roleKey then
+		return
+	end
+	self.roleBuffs[familyID] = self.roleBuffs[familyID] or {}
+	if not casterName or casterName == "" then
+		if locked then
+			self.roleBuffs[familyID][roleKey] = { caster = nil, locked = true }
+		else
+			self.roleBuffs[familyID][roleKey] = nil
+		end
+		return
+	end
+	self.roleBuffs[familyID][roleKey] = {
+		caster = casterName,
+		locked = locked and true or false,
+	}
+end
+
+function Assignments:GetRoleBuff(familyID, roleKey)
+	return self.roleBuffs[familyID] and self.roleBuffs[familyID][roleKey] or nil
+end
+
 function Assignments:SetPaladinNormalOverride(casterName, targetName, classToken, familyID, locked)
 	if not casterName or not targetName then
 		return
@@ -581,6 +655,67 @@ function Assignments:ClearPaladinNormalOverridesForClass(casterName, classToken)
 			byTarget[targetName] = nil
 		end
 	end
+end
+
+-- Per-character All-Class Personal Self-Buff config (Inner Fire, Shadowform, Imbues, Shields, Armors, Soul Link, Aspects, Self-Thorns, etc.)
+function Assignments:GetPersonalConfig()
+	if not LBB.CharDB then
+		LBB.CharDB = {}
+	end
+	if type(LBB.CharDB.personalBuffs) ~= "table" then
+		LBB.CharDB.personalBuffs = {}
+	end
+	return LBB.CharDB.personalBuffs
+end
+
+function Assignments:GetPersonalSlot(slotID)
+	if not slotID then
+		return nil
+	end
+	local cfg = self:GetPersonalConfig()
+	return cfg[slotID]
+end
+
+function Assignments:SetPersonalToggle(slotID, enabled, optEntry)
+	if not slotID then
+		return nil
+	end
+	local cfg = self:GetPersonalConfig()
+	if not enabled then
+		cfg[slotID] = {
+			enabled = false,
+			optionID = nil,
+			optionName = nil,
+		}
+	else
+		cfg[slotID] = {
+			enabled = true,
+			optionID = optEntry and optEntry.id or nil,
+			optionName = optEntry and optEntry.name or nil,
+		}
+	end
+	return cfg[slotID]
+end
+
+function Assignments:SetPersonalChoice(slotID, optEntry)
+	if not slotID then
+		return nil
+	end
+	local cfg = self:GetPersonalConfig()
+	if not optEntry then
+		cfg[slotID] = {
+			enabled = false,
+			optionID = nil,
+			optionName = nil,
+		}
+	else
+		cfg[slotID] = {
+			enabled = true,
+			optionID = optEntry.id,
+			optionName = optEntry.name,
+		}
+	end
+	return cfg[slotID]
 end
 
 -- Per-character Paladin Self-Buff config (Righteous Fury & Seal opt-in)
@@ -834,14 +969,29 @@ function Assignments:GetPlayerDuties(playerName)
 		end
 	end
 
-	-- 3. Target-scoped buffs (Thorns, Soulstone, Dampen/Amplify, etc.)
+	-- 3. Role-scoped & Target-scoped buffs (Thorns on Tanks, Fear Ward, Soulstone, Dampen/Amplify, etc.)
 	for _, famID in ipairs(Catalog.FAMILY_ORDER) do
 		local fam = Catalog.GetFamily(famID)
 		if fam and fam.scope == "TARGET" then
+			local roles = {}
+			local targets = {}
+			local anyLocked = false
+
+			local rMap = self.roleBuffs[famID]
+			if rMap then
+				for _, rKey in ipairs(Catalog.ROLE_ORDER or {}) do
+					local re = rMap[rKey]
+					if re and re.caster == playerName then
+						table_insert(roles, rKey)
+						if re.locked then
+							anyLocked = true
+						end
+					end
+				end
+			end
+
 			local tMap = self.targetBuffs[famID]
 			if tMap then
-				local targets = {}
-				local anyLocked = false
 				for targetName, e in pairs(tMap) do
 					if e and e.caster == playerName then
 						table_insert(targets, targetName)
@@ -851,17 +1001,19 @@ function Assignments:GetPlayerDuties(playerName)
 					end
 				end
 				table_sort(targets)
-				if #targets > 0 then
-					table_insert(duties, {
-						key = "TARGET:" .. famID,
-						kind = "TARGET_BUFF",
-						familyID = famID,
-						caster = playerName,
-						targets = targets,
-						locked = anyLocked,
-						reagentItemID = fam.reagentItemID,
-					})
-				end
+			end
+
+			if #roles > 0 or #targets > 0 then
+				table_insert(duties, {
+					key = "TARGET:" .. famID,
+					kind = "TARGET_BUFF",
+					familyID = famID,
+					caster = playerName,
+					roles = roles,
+					targets = targets,
+					locked = anyLocked,
+					reagentItemID = fam.reagentItemID,
+				})
 			end
 		end
 	end
@@ -913,6 +1065,50 @@ function Assignments:GetPlayerDuties(playerName)
 					icon = sealInfo.icon,
 					allSpellIDs = sealInfo.allSpellIDs,
 				})
+			end
+		end
+	end
+
+	-- 4c. All-Class Personal Self-Buffs (Inner Fire, Shadowform, Shaman Imbues/Shields, Mage/Warlock Armors, Soul Link, Aspects, Self-Thorns, etc.)
+	if localVec and localVec.name == playerName and localVec.personal then
+		local activeFamilies = {}
+		for _, d in ipairs(duties) do
+			if d.familyID then
+				activeFamilies[d.familyID] = true
+			end
+		end
+		local slotDefs = Catalog.PERSONAL_SLOTS and Catalog.PERSONAL_SLOTS[localVec.class] or {}
+		local pCfg = self:GetPersonalConfig()
+		for _, slotDef in ipairs(slotDefs) do
+			local cfgEntry = pCfg[slotDef.slotID]
+			local slotBucket = localVec.personal[slotDef.slotID]
+			if cfgEntry and cfgEntry.enabled and slotBucket and slotBucket.list and #slotBucket.list > 0 then
+				local optInfo = nil
+				if slotDef.mode == "TOGGLE" then
+					optInfo = (cfgEntry.optionID and slotBucket.byID[cfgEntry.optionID]) or slotBucket.list[1]
+				else
+					optInfo = (cfgEntry.optionID and slotBucket.byID[cfgEntry.optionID])
+						or (cfgEntry.optionName and slotBucket.byName[cfgEntry.optionName])
+				end
+				if optInfo and not (optInfo.dedupeFamilyID and activeFamilies[optInfo.dedupeFamilyID]) then
+					table_insert(duties, {
+						key = "SELF:" .. slotDef.slotID,
+						kind = "PERSONAL_BUFF",
+						slotID = slotDef.slotID,
+						slotLabel = slotDef.label,
+						optionID = optInfo.id,
+						caster = playerName,
+						spellID = optInfo.spellID,
+						spellName = optInfo.name,
+						shortName = optInfo.shortName,
+						icon = optInfo.icon,
+						defaultDuration = optInfo.duration or 1800,
+						checkType = slotDef.checkType or "AURA",
+						isPermanentToggle = slotDef.isPermanentToggle and true or false,
+						requiresPet = slotDef.requiresPet and true or false,
+						allSpellIDs = optInfo.allSpellIDs,
+					})
+				end
 			end
 		end
 	end
@@ -974,6 +1170,14 @@ function Assignments:GetAssignedFamiliesForUnit(playerName, unitInfo)
 		local clsEntry = self.classBuffs[playerName] and self.classBuffs[playerName][unitInfo.class]
 		if clsEntry and clsEntry.familyID then
 			add(clsEntry.familyID)
+		end
+	end
+
+	for famID, roles in pairs(self.roleBuffs) do
+		for roleKey, e in pairs(roles) do
+			if e and e.caster == playerName and Catalog.MatchesRoleFilter(roleKey, unitInfo) then
+				add(famID)
+			end
 		end
 	end
 

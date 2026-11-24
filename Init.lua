@@ -217,6 +217,14 @@ function LBB:HandleSlashCommand(rawMsg)
 		if self.MatrixFrame then
 			self.MatrixFrame:Toggle()
 		end
+	elseif cmd == "self" or cmd == "personal" then
+		if self.MatrixFrame then
+			self.MatrixFrame:OpenTab("SELF")
+		end
+	elseif cmd == "roles" or cmd == "role" or cmd == "targets" then
+		if self.MatrixFrame then
+			self.MatrixFrame:OpenTab("ROLES")
+		end
 	elseif cmd == "lock" then
 		self:ToggleLock()
 	elseif cmd == "auto" then
@@ -299,7 +307,7 @@ function LBB:HandleSlashCommand(rawMsg)
 			self:RefreshUI()
 		end
 	else
-		self:Print("Commands: /lbb [ui | lock | auto | reset | preset | scale | minimap | status | nudge | sync | rf | seal | options]")
+		self:Print("Commands: /lbb [ui | self | roles | lock | auto | reset | preset | scale | minimap | status | nudge | sync | rf | seal | options]")
 	end
 end
 
@@ -402,6 +410,14 @@ function LBB:OnEvent(event, ...)
 		return
 	end
 
+	if event == "UNIT_INVENTORY_CHANGED" or event == "UNIT_PET" then
+		local unit = self.Compat.SafeRead((...), nil)
+		if unit == "player" then
+			self:RefreshUI()
+		end
+		return
+	end
+
 	if event == "UNIT_SPELLCAST_SENT" then
 		local rawUnit, targetName, castGUID, spellID = ...
 		local unit = self.Compat.SafeRead(rawUnit, nil)
@@ -492,6 +508,8 @@ function LBB:Bootstrap()
 		"PLAYER_LOGIN",
 		"PLAYER_ENTERING_WORLD",
 		"UNIT_AURA",
+		"UNIT_INVENTORY_CHANGED",
+		"UNIT_PET",
 		"UNIT_SPELLCAST_SENT",
 		"UNIT_SPELLCAST_SUCCEEDED",
 		"UNIT_SPELLCAST_FAILED",

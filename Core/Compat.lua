@@ -484,6 +484,31 @@ function Compat.UnitGroupRolesAssigned(unit)
 	return Compat.SafeCall(_G.UnitGroupRolesAssigned, "NONE", unit)
 end
 
+function Compat.GetPartyAssignment(assignment, unit)
+	if not _G.GetPartyAssignment or type(assignment) ~= "string" or type(unit) ~= "string" then
+		return false
+	end
+	return Compat.SafeCall(_G.GetPartyAssignment, false, assignment, unit) and true or false
+end
+
+function Compat.HasOffHandWeapon()
+	if not _G.GetInventoryItemID then
+		return true
+	end
+	local itemID = Compat.SafeCall(_G.GetInventoryItemID, nil, "player", 17)
+	if not itemID or itemID <= 0 then
+		return false
+	end
+	if _G.C_Item and _G.C_Item.GetItemInfoInstant then
+		local ok, _, _, _, _, _, classID = pcall(_G.C_Item.GetItemInfoInstant, itemID)
+		if ok and type(classID) == "number" and not Compat.IsSecret(classID) then
+			local weaponClass = (_G.Enum and _G.Enum.ItemClass and _G.Enum.ItemClass.Weapon) or 2
+			return classID == weaponClass
+		end
+	end
+	return true
+end
+
 function Compat.GetRealmName()
 	local realm = Compat.SafeCall(_G.GetNormalizedRealmName, nil)
 	if not realm or realm == "" then

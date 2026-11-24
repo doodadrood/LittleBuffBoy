@@ -388,6 +388,124 @@ function Capabilities:ScanPlayer()
 		end
 	end
 
+	-- All-Class Personal Self-Buffs (Inner Fire, Shadowform, Shaman Imbues & Shields, Mage/Warlock Armors, Soul Link, Druid Self-Thorns/Omen, Hunter Aspects, etc.)
+	local knownPersonal = {}
+	local personalSlots = Catalog.PERSONAL_SLOTS and Catalog.PERSONAL_SLOTS[classToken] or nil
+	if personalSlots then
+		local spellBookItems = nil
+		local function getSpellBookItems()
+			if spellBookItems then
+				return spellBookItems
+			end
+			spellBookItems = {}
+			if _G.C_SpellBook and _G.C_SpellBook.GetNumSpellBookSkillLines and _G.C_SpellBook.GetSpellBookSkillLineInfo and _G.C_SpellBook.GetSpellBookItemInfo then
+				local bank = (_G.Enum and _G.Enum.SpellBookSpellBank and _G.Enum.SpellBookSpellBank.Player) or 0
+				local numLines = Compat.SafeCall(_G.C_SpellBook.GetNumSpellBookSkillLines, 0)
+				for lineIdx = 1, numLines do
+					local lineInfo = Compat.SafeCall(_G.C_SpellBook.GetSpellBookSkillLineInfo, nil, lineIdx)
+					if type(lineInfo) == "table" and lineInfo.itemIndexOffset and lineInfo.numSpellBookItems then
+						local offset = lineInfo.itemIndexOffset
+						for slot = offset + 1, offset + lineInfo.numSpellBookItems do
+							local itemInfo = Compat.SafeCall(_G.C_SpellBook.GetSpellBookItemInfo, nil, slot, bank)
+							if type(itemInfo) == "table" and itemInfo.spellID and itemInfo.spellID > 0 then
+								local sInfo = Compat.GetSpellInfo(itemInfo.spellID)
+								if sInfo and sInfo.name then
+									table_insert(spellBookItems, {
+										spellID = itemInfo.spellID,
+										name = sInfo.name,
+										iconID = sInfo.iconID,
+									})
+								end
+							end
+						end
+					end
+				end
+			end
+			return spellBookItems
+		end
+
+		for _, slotDef in ipairs(personalSlots) do
+			local slotBucket = {
+				slotID = slotDef.slotID,
+				byID = {},
+				byName = {},
+				list = {},
+			}
+			local function registerPersonalOpt(optID, name, shortName, spellID, icon, duration, allIDs, dedupeFamilyID)
+				local existing = slotBucket.byName[name]
+				if existing then
+					existing.allSpellIDs[spellID] = true
+					if allIDs then
+						for sid in pairs(allIDs) do
+							existing.allSpellIDs[sid] = true
+						end
+					end
+					return
+				end
+				local idSet = { [spellID] = true }
+				if allIDs then
+					for sid in pairs(allIDs) do
+						idSet[sid] = true
+					end
+				end
+				local entry = {
+					id = optID,
+					name = name,
+					shortName = shortName or name:sub(1, 6),
+					spellID = spellID,
+					icon = icon or 134400,
+					duration = duration or 1800,
+					dedupeFamilyID = dedupeFamilyID,
+					allSpellIDs = idSet,
+				}
+				slotBucket.byID[optID] = entry
+				slotBucket.byName[name] = entry
+				table_insert(slotBucket.list, entry)
+			end
+
+			for _, optDef in ipairs(slotDef.options or {}) do
+				local best = findBestKnownRank(optDef.ranks, self.pendingSpellLoads)
+				if best then
+					local allIDs = {}
+					for _, sid in ipairs(optDef.ranks or {}) do
+						allIDs[sid] = true
+					end
+					registerPersonalOpt(
+						optDef.id,
+						best.name or optDef.name,
+						optDef.shortName,
+						best.spellID,
+						best.iconID or optDef.icon,
+						optDef.duration,
+						allIDs,
+						optDef.dedupeFamilyID
+					)
+				end
+			end
+
+			if slotDef.dynamicPattern then
+				for _, sb in ipairs(getSpellBookItems()) do
+					if sb.name:find(slotDef.dynamicPattern) and not sb.name:find("^Improved ") then
+						local catOpt = Catalog.PERSONAL_NAME_TO_OPT[sb.name]
+						local optID = (catOpt and catOpt.id) or ("DYN_" .. sb.name:upper():gsub("[^A-Z0-9]+", "_"))
+						registerPersonalOpt(
+							optID,
+							sb.name,
+							catOpt and catOpt.shortName or nil,
+							sb.spellID,
+							sb.iconID or (catOpt and catOpt.icon),
+							(catOpt and catOpt.duration) or (slotDef.isPermanentToggle and 0 or 1800),
+							nil,
+							catOpt and catOpt.dedupeFamilyID or nil
+						)
+					end
+				end
+			end
+
+			knownPersonal[slotDef.slotID] = slotBucket
+		end
+	end
+
 	self:ScanTracking()
 
 	if Compat.InCombat() and prev and prev.class == classToken then
@@ -404,6 +522,9 @@ function Capabilities:ScanPlayer()
 			knownSeals = prev.seals or knownSeals
 			knownSealsList = prev.sealsList
 		end
+		if next(knownPersonal) == nil and prev.personal then
+			knownPersonal = prev.personal
+		end
 	end
 
 	local vec = {
@@ -416,6 +537,7 @@ function Capabilities:ScanPlayer()
 		righteousFury = righteousFury,
 		seals = knownSeals,
 		sealsList = knownSealsList,
+		personal = knownPersonal,
 		totems = knownTotems,
 		reagents = reagents,
 		symbols = reagents[21177] or 0,
@@ -475,6 +597,15 @@ function Capabilities:OnSpellDataLoaded(spellID, success)
 			if t.spellID == spellID then
 				t.name = info.name
 				t.icon = info.iconID or t.icon
+				updated = true
+			end
+		end
+	end
+	for _, slotBucket in pairs(self.playerVector.personal or {}) do
+		for _, p in ipairs(slotBucket.list or {}) do
+			if p.spellID == spellID then
+				p.name = info.name
+				p.icon = info.iconID or p.icon
 				updated = true
 			end
 		end

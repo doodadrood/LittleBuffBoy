@@ -63,10 +63,12 @@ function Mock.New()
 		sentChatMessages = {},
 		tracking = {}, -- list of { name, texture, active, type, spellID }
 		trackingTableMode = true,
-		units = {},    -- [unitToken] = { name, class, subgroup, role, guid, online, dead, visible, inCombat, isLeader, isAssist, auras = {}, auraBlocked = false }
+		units = {},    -- [unitToken] = { name, class, subgroup, role, raidRole, combatRole, guid, online, dead, visible, inCombat, isLeader, isAssist, auras = {}, auraBlocked = false }
 		raidOrder = {},
 		talents = {},  -- [talentName] = rank (exposed via C_ClassTalents + C_Traits!)
 		weaponEnchants = { false, 0, 0, nil, false, 0, 0, nil },
+		inventoryConfigured = false,
+		equippedItems = {}, -- [slot] = { itemID = number, classID = number }
 		frames = {},
 		hooks = {},
 	}
@@ -147,11 +149,18 @@ function Mock.New()
 	end
 
 	function env:SetUnit(unit, info)
+		if info == nil then
+			state.units[unit] = nil
+			return
+		end
 		state.units[unit] = {
 			name = info.name,
 			class = info.class or "PRIEST",
 			subgroup = info.subgroup or 1,
 			role = info.role or "NONE",
+			raidRole = info.raidRole, -- "MAINTANK" | "MAINASSIST" | nil
+			combatRole = info.combatRole, -- "TANK" | "HEALER" | "DAMAGER" | nil
+			partyAssignment = info.partyAssignment, -- "MAINTANK" | "MAINASSIST" | nil
 			guid = info.guid or ("GUID-" .. (info.name or unit)),
 			online = (info.online ~= false),
 			dead = info.dead and true or false,
@@ -166,6 +175,15 @@ function Mock.New()
 			auras = info.auras or {},
 			auraBlocked = info.auraBlocked and true or false,
 		}
+	end
+
+	function env:SetEquippedItem(slot, itemID, classID)
+		state.inventoryConfigured = true
+		if not itemID then
+			state.equippedItems[slot] = nil
+		else
+			state.equippedItems[slot] = { itemID = itemID, classID = classID or 2 }
+		end
 	end
 
 	function env:SetGroup(mode, unitList)
@@ -386,6 +404,7 @@ function Mock.New()
 		_G.LE_PARTY_CATEGORY_INSTANCE = 2
 		_G.Enum = {
 			SpellBookSpellBank = { Player = 0, Pet = 1 },
+			ItemClass = { Weapon = 2, Armor = 4 },
 		}
 
 		_G.C_Spell = {
@@ -519,6 +538,14 @@ function Mock.New()
 			GetItemCount = function(itemID)
 				return state.itemCounts[itemID] or 0
 			end,
+			GetItemInfoInstant = function(itemID)
+				for _, eq in pairs(state.equippedItems) do
+					if eq.itemID == itemID then
+						return itemID, "Weapon", "SubType", "INVTYPE_WEAPON", 134400, eq.classID, 0
+					end
+				end
+				return itemID, "Weapon", "SubType", "INVTYPE_WEAPON", 134400, 2, 0
+			end,
 		}
 
 		_G.C_AddOns = {
@@ -635,6 +662,20 @@ function Mock.New()
 		end
 		_G.UnitAffectingCombat = function(u) return state.units[u] and state.units[u].inCombat or false end
 		_G.UnitGroupRolesAssigned = function(u) return state.units[u] and state.units[u].role or "NONE" end
+		_G.GetPartyAssignment = function(assignment, u)
+			local info = state.units[u]
+			return info ~= nil and (info.partyAssignment == assignment or info.raidRole == assignment)
+		end
+		_G.GetInventoryItemID = function(u, slot)
+			if not state.inventoryConfigured then
+				return 19019 -- default weapon when inventory isn't explicitly under test
+			end
+			if u ~= "player" then
+				return nil
+			end
+			local eq = state.equippedItems[slot]
+			return eq and eq.itemID or nil
+		end
 		_G.UnitIsGroupLeader = function(u) return state.units[u] and state.units[u].isLeader or false end
 		_G.UnitIsGroupAssistant = function(u) return state.units[u] and state.units[u].isAssist or false end
 		_G.GetWeaponEnchantInfo = function()
@@ -658,7 +699,7 @@ function Mock.New()
 				return nil
 			end
 			local rank = u.isLeader and 2 or (u.isAssist and 1 or 0)
-			return u.name, rank, u.subgroup or 1, 60, u.class, u.class, "Zone", u.online, u.dead
+			return u.name, rank, u.subgroup or 1, 60, u.class, u.class, "Zone", u.online, u.dead, u.raidRole, nil, u.combatRole
 		end
 
 		_G.UIParent = env:CreateMockFrame("Frame", "UIParent", nil)
