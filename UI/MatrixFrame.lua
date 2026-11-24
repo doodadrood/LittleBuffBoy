@@ -118,7 +118,10 @@ function MatrixFrame:Init()
 	f:EnableMouse(true)
 	f:RegisterForDrag("LeftButton")
 	f:SetFrameStrata("DIALOG")
-	Theme.ApplyPanel(f, Theme.Colors.bg, Theme.Colors.borderLight)
+	if f.SetFrameLevel then f:SetFrameLevel(10) end
+	if f.SetToplevel then f:SetToplevel(true) end
+	Theme.ApplyDropShadow(f)
+	Theme.ApplyPanel(f, Theme.Colors.windowBg, Theme.Colors.borderLight)
 
 	f:SetScript("OnDragStart", function(self) self:StartMoving() end)
 	f:SetScript("OnDragStop", function(self)
@@ -180,7 +183,7 @@ function MatrixFrame:Init()
 	local content = _G.CreateFrame("Frame", nil, f)
 	content:SetPoint("TOPLEFT", tabBar, "BOTTOMLEFT", 0, -6)
 	content:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -8, 38)
-	Theme.ApplyPanel(content, Theme.Colors.panel, Theme.Colors.border)
+	Theme.ApplyPanel(content, Theme.Colors.panelSolid, Theme.Colors.border)
 	f._content = content
 
 	-- Hint text

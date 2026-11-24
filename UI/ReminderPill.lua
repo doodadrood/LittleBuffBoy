@@ -232,8 +232,11 @@ function ReminderPill:InitNudgeBar()
 	f:SetClampedToScreen(true)
 	f:EnableMouse(true)
 	f:RegisterForDrag("LeftButton")
-	f:SetFrameStrata("DIALOG")
-	Theme.ApplyPanel(f, Theme.Colors.bg, Theme.Colors.accent)
+	f:SetFrameStrata("FULLSCREEN_DIALOG")
+	if f.SetFrameLevel then f:SetFrameLevel(20) end
+	if f.SetToplevel then f:SetToplevel(true) end
+	Theme.ApplyDropShadow(f)
+	Theme.ApplyPanel(f, Theme.Colors.windowBg, Theme.Colors.accent)
 
 	f:SetScript("OnDragStart", function(self) self:StartMoving() end)
 	f:SetScript("OnDragStop", function(self)
@@ -376,6 +379,9 @@ function ReminderPill:ShowNudgeBar(onlyIfMissing)
 		return false
 	end
 	self.nudgeFrame:Show()
+	if self.nudgeFrame.Raise then
+		self.nudgeFrame:Raise()
+	end
 	return true
 end
 

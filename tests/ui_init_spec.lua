@@ -163,4 +163,38 @@ describe("Full Addon Integration (UI, RaidIndicators, ReminderPill, Init & Slash
 			assert.is_true(LBB.Options.frame:IsShown())
 		end)
 	end)
+
+	it("layers Matrix, Nudge, Options, and Dropdown frames cleanly with opaque backgrounds and no z-fighting", function()
+		LBB:HandleSlashCommand("ui")
+		LBB:HandleSlashCommand("nudge")
+		LBB:HandleSlashCommand("options")
+		LBB.Theme.ShowDropdownMenu(LBB.Options.frame, { { text = "Test Item" } })
+
+		-- Strict strata hierarchy: Matrix (DIALOG) < Nudge & Options (FULLSCREEN_DIALOG, Options higher level) < Dropdown (TOOLTIP)
+		assert.are.equal("DIALOG", LBB.MatrixFrame.frame:GetFrameStrata())
+		assert.are.equal("FULLSCREEN_DIALOG", LBB.ReminderPill.nudgeFrame:GetFrameStrata())
+		assert.are.equal("FULLSCREEN_DIALOG", LBB.Options.frame:GetFrameStrata())
+		assert.is_true(LBB.Options.frame:GetFrameLevel() > LBB.ReminderPill.nudgeFrame:GetFrameLevel())
+		assert.are.equal("TOOLTIP", LBB.Theme._menuCatcher:GetFrameStrata())
+		assert.are.equal("TOOLTIP", LBB.Theme._menuMain:GetFrameStrata())
+		assert.is_true(LBB.Theme._menuMain:GetFrameLevel() > LBB.Theme._menuCatcher:GetFrameLevel())
+
+		-- Solid 1.0 alpha opaque backgrounds & drop shadows prevent underlying Matrix rows from bleeding through
+		assert.are.equal(1.0, LBB.Options.frame._lbbBg._color[4])
+		assert.are.equal(1.0, LBB.MatrixFrame.frame._lbbBg._color[4])
+		assert.are.equal(1.0, LBB.MatrixFrame.frame._content._lbbBg._color[4])
+		assert.is_not_nil(LBB.Options.frame._lbbShadow)
+
+		-- Priest sees the Class Self Buffs shortcut instead of Paladin-only rows, and dragging saves optionsPos
+		assert.is_false(LBB.Options.frame._paladinRFRow:IsShown())
+		assert.is_false(LBB.Options.frame._paladinSealRow:IsShown())
+		assert.is_true(LBB.Options.frame._selfShortcutRow:IsShown())
+
+		LBB.Options.frame:ClearAllPoints()
+		LBB.Options.frame:SetPoint("TOPLEFT", _G.UIParent, "TOPLEFT", 180, -120)
+		LBB.Options.frame:GetScript("OnDragStop")(LBB.Options.frame)
+		assert.is_not_nil(LBB.CharDB.optionsPos)
+		assert.are.equal(180, LBB.CharDB.optionsPos.x)
+		assert.are.equal(-120, LBB.CharDB.optionsPos.y)
+	end)
 end)

@@ -275,10 +275,19 @@ function Mock.New()
 			SetPoint = function(self, ...) table_insert(self._points, { ... }) end,
 			ClearAllPoints = function(self) self._points = {} end,
 			SetAllPoints = function(self, target) self._points = { { "ALL", target } } end,
-			GetPoint = function(self) return "CENTER", _G.UIParent, "CENTER", 0, 0 end,
-			SetFrameStrata = function() end,
-			SetFrameLevel = function() end,
-			GetFrameLevel = function() return 1 end,
+			GetPoint = function(self, idx)
+				local pt = self._points and self._points[idx or 1]
+				if pt and pt[1] ~= "ALL" then
+					return pt[1], pt[2], pt[3], pt[4], pt[5]
+				end
+				return "CENTER", _G.UIParent, "CENTER", 0, 0
+			end,
+			SetFrameStrata = function(self, s) self._strata = s end,
+			GetFrameStrata = function(self) return self._strata or "MEDIUM" end,
+			SetFrameLevel = function(self, l) self._level = l end,
+			GetFrameLevel = function(self) return self._level or 1 end,
+			SetToplevel = function(self, v) self._toplevel = v and true or false end,
+			Raise = function(self) self._raised = (self._raised or 0) + 1 end,
 			SetScale = function(self, s) self._scale = s end,
 			SetAlpha = function(self, a) self._alpha = a end,
 			EnableMouse = function() end,

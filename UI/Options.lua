@@ -7,6 +7,25 @@ LBB.Options = Options
 
 Options.frame = nil
 
+local function saveOptionsPos(frame)
+	if not frame or not LBB.CharDB then return end
+	local point, _, relPoint, x, y = frame:GetPoint(1)
+	if point then
+		LBB.CharDB.optionsPos = { point = point, relPoint = relPoint or point, x = x or 0, y = y or 0 }
+	end
+end
+
+local function restoreOptionsPos(frame)
+	if not frame then return end
+	frame:ClearAllPoints()
+	local pos = LBB.CharDB and LBB.CharDB.optionsPos
+	if pos and pos.point then
+		frame:SetPoint(pos.point, _G.UIParent, pos.relPoint or pos.point, pos.x or 0, pos.y or 0)
+	else
+		frame:SetPoint("CENTER", _G.UIParent, "CENTER", 0, 20)
+	end
+end
+
 local function makeToggleRow(parent, y, labelText, getFn, setFn)
 	local Theme = LBB.Theme
 	local row = _G.CreateFrame("Frame", nil, parent)
@@ -23,6 +42,7 @@ local function makeToggleRow(parent, y, labelText, getFn, setFn)
 		self._refresh()
 	end)
 	btn:SetPoint("RIGHT", row, "RIGHT", 0, 0)
+	btn._row = row
 	btn._refresh = function()
 		local on = getFn()
 		btn._label:SetText(on and "|cff34d399ON|r" or "|cffef4444OFF|r")
@@ -38,16 +58,27 @@ function Options:Init()
 	local Theme = LBB.Theme
 	local f = _G.CreateFrame("Frame", "LittleBuffBoyOptionsFrame", _G.UIParent)
 	f:SetSize(366, 496)
-	f:SetPoint("CENTER", _G.UIParent, "CENTER", 0, 20)
+	restoreOptionsPos(f)
 	f:SetMovable(true)
 	f:SetClampedToScreen(true)
 	f:EnableMouse(true)
 	f:RegisterForDrag("LeftButton")
-	f:SetFrameStrata("DIALOG")
-	Theme.ApplyPanel(f, Theme.Colors.bg, Theme.Colors.borderLight)
+	f:SetFrameStrata("FULLSCREEN_DIALOG")
+	if f.SetFrameLevel then f:SetFrameLevel(40) end
+	if f.SetToplevel then f:SetToplevel(true) end
+	Theme.ApplyDropShadow(f)
+	Theme.ApplyPanel(f, Theme.Colors.windowBg, Theme.Colors.accent)
 
 	f:SetScript("OnDragStart", function(self) self:StartMoving() end)
-	f:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+	f:SetScript("OnDragStop", function(self)
+		self:StopMovingOrSizing()
+		saveOptionsPos(self)
+	end)
+	f:SetScript("OnHide", function()
+		if Theme.HideDropdownMenu then
+			Theme.HideDropdownMenu()
+		end
+	end)
 
 	if _G.UISpecialFrames then
 		table.insert(_G.UISpecialFrames, "LittleBuffBoyOptionsFrame")
@@ -275,8 +306,8 @@ function Options:Init()
 	table.insert(f._refreshables, trBtn)
 	y = y + 32
 
-	-- Paladin Self Buffs (Righteous Fury opt-in + Seal dropdown)
-	table.insert(f._refreshables, makeToggleRow(f, y, "Paladin: Track Righteous Fury",
+	-- Class Self-Buffs section (Paladin RF/Seal on Paladins; quick tab shortcut on all other classes)
+	local rfToggleBtn = makeToggleRow(f, y, "Paladin: Track Righteous Fury",
 		function()
 			local cfg = LBB.Assignments and LBB.Assignments:GetPaladinSelfConfig()
 			return cfg and cfg.trackRF or false
@@ -285,7 +316,24 @@ function Options:Init()
 			LBB.Assignments:SetRighteousFuryEnabled(v)
 			LBB:RefreshUI()
 		end
-	))
+	)
+	table.insert(f._refreshables, rfToggleBtn)
+	f._paladinRFRow = rfToggleBtn._row
+
+	local selfShortcutRow = _G.CreateFrame("Frame", nil, f)
+	selfShortcutRow:SetSize(336, 24)
+	selfShortcutRow:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -y)
+	local scSelfLbl = Theme.CreateFontString(selfShortcutRow, 11, "LEFT", Theme.Colors.text)
+	scSelfLbl:SetPoint("LEFT", selfShortcutRow, "LEFT", 0, 0)
+	scSelfLbl:SetText("Class Self Buffs")
+	local scSelfBtn = Theme.CreateButton(selfShortcutRow, "My Self Buffs ->", 150, 20, function()
+		f:Hide()
+		if LBB.MatrixFrame and LBB.MatrixFrame.OpenTab then
+			LBB.MatrixFrame:OpenTab("SELF")
+		end
+	end)
+	scSelfBtn:SetPoint("RIGHT", selfShortcutRow, "RIGHT", 0, 0)
+	f._selfShortcutRow = selfShortcutRow
 	y = y + 28
 
 	local sealRow = _G.CreateFrame("Frame", nil, f)
@@ -306,6 +354,7 @@ function Options:Init()
 	end
 	sBtn._refresh()
 	table.insert(f._refreshables, sBtn)
+	f._paladinSealRow = sealRow
 	y = y + 32
 
 	-- PallyPower Bridge Status
@@ -321,6 +370,22 @@ end
 function Options:Refresh()
 	if not self.frame then
 		return
+	end
+	restoreOptionsPos(self.frame)
+	local pVec = LBB.Capabilities and LBB.Capabilities:GetPlayerVector()
+	local isPaladin = (pVec and pVec.class == "PALADIN")
+	if self.frame._paladinRFRow and self.frame._paladinSealRow and self.frame._selfShortcutRow then
+		if isPaladin then
+			self.frame._paladinRFRow:Show()
+			self.frame._paladinSealRow:Show()
+			self.frame._selfShortcutRow:Hide()
+			self.frame:SetSize(366, 496)
+		else
+			self.frame._paladinRFRow:Hide()
+			self.frame._paladinSealRow:Hide()
+			self.frame._selfShortcutRow:Show()
+			self.frame:SetSize(366, 468)
+		end
 	end
 	for _, item in ipairs(self.frame._refreshables or {}) do
 		if item._refresh then
@@ -342,5 +407,8 @@ function Options:Toggle()
 	else
 		self:Refresh()
 		self.frame:Show()
+		if self.frame.Raise then
+			self.frame:Raise()
+		end
 	end
 end

@@ -10,6 +10,8 @@ local string_format = string.format
 
 Theme.Colors = {
 	bg          = { 0.08, 0.09, 0.12, 0.94 },
+	windowBg    = { 0.07, 0.08, 0.11, 1.00 },
+	panelSolid  = { 0.11, 0.13, 0.17, 1.00 },
 	panel       = { 0.11, 0.13, 0.17, 0.96 },
 	header      = { 0.14, 0.17, 0.23, 0.98 },
 	tile        = { 0.12, 0.14, 0.19, 0.92 },
@@ -66,6 +68,17 @@ function Theme.SetBorderColor(frame, color)
 	for _, tex in pairs(frame._lbbBorders) do
 		tex:SetColorTexture(color[1], color[2], color[3], color[4] or 1)
 	end
+end
+
+function Theme.ApplyDropShadow(frame)
+	if not frame or frame._lbbShadow then
+		return
+	end
+	local sh = frame:CreateTexture(nil, "BACKGROUND")
+	sh:SetPoint("TOPLEFT", frame, "TOPLEFT", -5, 5)
+	sh:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 5, -5)
+	sh:SetColorTexture(0, 0, 0, 0.62)
+	frame._lbbShadow = sh
 end
 
 function Theme.CreateFontString(parent, size, justifyH, color)
@@ -163,12 +176,16 @@ end
 local MENU_ROW_H = 20
 local MENU_PAD = 4
 
-local function ensureMenuPanel(name, parent)
+local function ensureMenuPanel(name, parent, level)
 	local panel = _G.CreateFrame("Frame", name, parent or _G.UIParent)
 	panel:SetFrameStrata("TOOLTIP")
+	if panel.SetFrameLevel and level then
+		panel:SetFrameLevel(level)
+	end
 	panel:SetClampedToScreen(true)
 	panel:EnableMouse(true)
-	Theme.ApplyPanel(panel, Theme.Colors.bg, Theme.Colors.accent)
+	Theme.ApplyDropShadow(panel)
+	Theme.ApplyPanel(panel, Theme.Colors.windowBg, Theme.Colors.accent)
 	panel._rows = {}
 	panel:Hide()
 	return panel
@@ -302,7 +319,10 @@ function Theme.ShowDropdownMenu(anchorFrame, items)
 	if not Theme._menuCatcher then
 		local catcher = _G.CreateFrame("Button", "LittleBuffBoyDropdownCatcher", _G.UIParent)
 		catcher:SetAllPoints(_G.UIParent)
-		catcher:SetFrameStrata("FULLSCREEN_DIALOG")
+		catcher:SetFrameStrata("TOOLTIP")
+		if catcher.SetFrameLevel then
+			catcher:SetFrameLevel(1)
+		end
 		catcher:EnableMouse(true)
 		catcher:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 		catcher:SetScript("OnClick", function()
@@ -311,8 +331,8 @@ function Theme.ShowDropdownMenu(anchorFrame, items)
 		catcher:Hide()
 		Theme._menuCatcher = catcher
 
-		Theme._menuMain = ensureMenuPanel("LittleBuffBoyDropdownMain", catcher)
-		Theme._menuSub = ensureMenuPanel("LittleBuffBoyDropdownSub", catcher)
+		Theme._menuMain = ensureMenuPanel("LittleBuffBoyDropdownMain", catcher, 10)
+		Theme._menuSub = ensureMenuPanel("LittleBuffBoyDropdownSub", catcher, 25)
 		if _G.UISpecialFrames then
 			table.insert(_G.UISpecialFrames, "LittleBuffBoyDropdownCatcher")
 		end
